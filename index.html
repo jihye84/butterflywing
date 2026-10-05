@@ -294,7 +294,7 @@
   <div class="actions">
     <div class="grp l"><button id="flip">전환</button><button id="guide" aria-pressed="false">도감</button></div>
     <button id="shoot" aria-label="사진 촬영">촬영</button>
-    <div class="grp r"><button id="per" aria-pressed="false" hidden title="사람마다 다른 나비를 배정합니다">각자</button></div>
+    <div class="grp r"><button id="share" hidden title="찍은 사진을 다른 앱으로 보냅니다">공유</button><button id="per" aria-pressed="false" hidden title="사람마다 다른 나비를 배정합니다">각자</button></div>
   </div>
 </div>
 
@@ -2523,33 +2523,78 @@ function render(){
    6. 사진 촬영
    ──────────────────────────────────────────────────────────── */
 
-document.getElementById("shoot").onclick = () => {
+/* 아이폰·아이패드는 "사용자가 누른 그 순간"을 벗어나면 저장도 공유도 막습니다.
+   toBlob 은 콜백으로 돌아오느라 그 순간을 놓칩니다. 그래서 동기로 끝나는
+   toDataURL 로 찍고, 그 자리에서 바로 Blob 으로 바꿉니다. */
+function snapshot(){
+  // 파일 이름은 영문·숫자로 둡니다 — 한글 이름을 붙이면 크로뮴 계열 브라우저가
+  // 이름을 통째로 버리고 "download" 로 저장해 버립니다. 시각은 기기의 현지 시각.
+  const d = new Date(), two = n => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${two(d.getMonth()+1)}${two(d.getDate())}`
+              + `-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+  const name = `butterfly-wings-${stamp}.png`;
+  const dataUrl = out.toDataURL("image/png");
+  const bin = atob(dataUrl.slice(dataUrl.indexOf(",") + 1));
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return { name, blob: new Blob([buf], { type: "image/png" }), dataUrl };
+}
+
+function flashOnce(){
   const flash = document.getElementById("flash");
   flash.style.opacity = ".85";
   setTimeout(() => flash.style.opacity = "0", 60);
-  const name = `나비날개_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"")}.png`;
-  out.toBlob(async blob => {
-    if (!blob) return;
-    // 아이폰은 링크 다운로드가 막혀 있어 공유 시트를 먼저 씁니다 (사진 앱에 저장 가능)
-    try {
-      const file = new File([blob], name, { type: "image/png" });
-      if (navigator.canShare && navigator.canShare({ files: [file] })){
-        await navigator.share({ files: [file] });
-        return;
-      }
-    } catch (e){
-      if (e && e.name === "AbortError") return;   // 사용자가 공유를 취소함
+}
+
+/* 셔터 — 공유 시트를 거치지 않고 사진 파일로 바로 내려받습니다.
+   아이폰·아이패드는 「파일」 앱의 다운로드에, 안드로이드·PC는 다운로드 폴더에 담깁니다. */
+document.getElementById("shoot").onclick = () => {
+  flashOnce();
+  let shot;
+  try { shot = snapshot(); }
+  catch (e){ setStatus("사진을 만들지 못했습니다", 3000); return; }
+
+  const a = document.createElement("a");
+  if ("download" in a){
+    const url = URL.createObjectURL(shot.blob);
+    a.href = url; a.download = shot.name; a.rel = "noopener";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setStatus("사진을 저장했습니다", 2200);
+  } else {
+    const w = window.open();                  // 아주 오래된 사파리
+    if (w){
+      w.document.write('<img src="' + shot.dataUrl + '" style="max-width:100%">');
+      w.document.close();
     }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    if ("download" in a){
-      a.href = url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-    } else {
-      window.open(url, "_blank");                 // 최후 수단: 새 탭에서 길게 눌러 저장
-    }
-    setTimeout(() => URL.revokeObjectURL(url), 8000);
-  }, "image/png");
+    setStatus("새 탭에서 사진을 길게 눌러 저장해 주세요", 5000);
+  }
+};
+
+/* 공유 — 파일 공유가 되는 기기에서만 버튼이 나타납니다 */
+const shareBtn = document.getElementById("share");
+const CAN_SHARE_FILES = (() => {
+  try {
+    return !!(navigator.canShare && navigator.canShare({
+      files: [new File([new Uint8Array(1)], "a.png", { type: "image/png" })]
+    }));
+  } catch (e){ return false; }
+})();
+if (CAN_SHARE_FILES) shareBtn.hidden = false;
+
+shareBtn.onclick = async () => {
+  let shot;
+  try { shot = snapshot(); }
+  catch (e){ setStatus("사진을 만들지 못했습니다", 3000); return; }
+  try {
+    await navigator.share({
+      files: [new File([shot.blob], shot.name, { type: "image/png" })],
+      title: "나비 날개"
+    });
+  } catch (e){
+    if (e && e.name === "AbortError") return;        // 사용자가 공유를 취소함
+    setStatus("공유할 수 없습니다 — 셔터로 저장해 주세요", 4000);
+  }
 };
 
 /* ────────────────────────────────────────────────────────────
