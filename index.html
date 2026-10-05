@@ -1,0 +1,2638 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#070a14">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="나비 날개">
+<meta name="description" content="어깨 뒤로 실제 나비의 날개가 펼쳐지는 카메라. 11종의 도감 데이터로 그립니다.">
+<title>나비 날개 AR</title>
+<style>
+  :root{
+    --ink:#f2f5ff;
+    --dim:#9aa3bd;
+    --ground:#070a14;
+    --panel:rgba(12,16,30,.72);
+    --line:rgba(255,255,255,.14);
+    --morpho:#4d8dff;
+  
+    --badge:12px;   /* 오른쪽 아래 호스팅 배지가 가리는 높이 */
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--ground);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",Roboto,sans-serif;
+    overflow:hidden;-webkit-tap-highlight-color:transparent}
+
+  #stage{position:fixed;inset:0;display:grid;place-items:center;background:#000}
+  #cam{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+  /* 세로 화면에 4:3 영상을 담으면 위아래가 남습니다 — 은은한 바탕으로 채웁니다 */
+  #stage::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(120% 70% at 50% 42%,#16203a 0%,#0a0e1a 62%,#05070f 100%)}
+  #out{position:relative;z-index:1;max-width:100%;max-height:100%;display:block}
+
+  /* ---- 상단 상태 ---- */
+  #status{
+    position:fixed;left:0;right:0;top:0;
+    padding:calc(env(safe-area-inset-top,0px) + 10px) 96px 10px 16px;
+    display:flex;justify-content:center;pointer-events:none;
+  }
+  #status span{
+    background:var(--panel);backdrop-filter:blur(12px);
+    border:1px solid var(--line);border-radius:999px;
+    padding:7px 14px;font-size:13px;letter-spacing:.01em;
+    transition:opacity .4s;
+  }
+
+  /* ---- 하단 컨트롤 ---- */
+  /* 오른쪽 아래에 호스팅 업체 배지가 떠 있으면 버튼이 가려집니다. 배지가 실제로
+     있는지 확인해서(watchBadge) 그때만 아래를 비웁니다 — 없으면 화면을 다 씁니다. */
+  #bar{
+    position:fixed;left:0;right:0;bottom:0;
+    padding:6px 14px calc(env(safe-area-inset-bottom,0px) + var(--badge));
+    background:linear-gradient(to top,rgba(4,6,14,.94),rgba(4,6,14,.72) 62%,transparent);
+    display:flex;flex-direction:column;gap:9px;
+  }
+  /* 손잡이를 당기면 조절 도구가 접히고 카메라가 넓게 보입니다 */
+  #fold{
+    flex:none;align-self:center;width:72px;height:24px;padding:0;
+    border:0;background:transparent;cursor:pointer;position:relative;
+  }
+  #fold::before{
+    content:"";position:absolute;left:50%;top:10px;transform:translateX(-50%);
+    width:46px;height:4px;border-radius:2px;background:rgba(255,255,255,.5);
+    transition:background .2s;
+  }
+  #fold:active::before{background:rgba(255,255,255,.85)}
+  #bar.folded{background:linear-gradient(to top,rgba(4,6,14,.72),transparent)}
+  #bar.folded .species,
+  #bar.folded .sliders{display:none}
+  #bar.folded .actions .grp{display:none}
+  /* 종이 늘어나므로 가로 스크롤 */
+  .species{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;
+    padding-bottom:2px;scroll-padding-inline:16px;
+    -webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%);
+    mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%)}
+  .species::-webkit-scrollbar{display:none}
+  .species button{flex:none}
+  .species button{
+    font:inherit;font-size:13px;color:var(--dim);
+    background:var(--panel);border:1px solid var(--line);
+    border-radius:999px;padding:9px 14px;cursor:pointer;
+    display:flex;align-items:center;gap:7px;transition:.2s;
+  }
+  .species button .dot{width:9px;height:9px;border-radius:50%;background:currentColor}
+  .species button[aria-pressed="true"]{color:var(--ink);border-color:rgba(255,255,255,.45);background:rgba(255,255,255,.12)}
+
+  .sliders{display:flex;gap:14px;max-width:520px;width:100%;margin:0 auto}
+  .sliders label{padding-bottom:2px}
+  .sliders label{flex:1;display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--dim);letter-spacing:.06em}
+  input[type=range]{width:100%;accent-color:var(--morpho);height:20px;margin:0}
+
+  .actions{display:grid;grid-template-columns:1fr auto 1fr;gap:9px;align-items:center}
+  .actions .grp{display:flex;gap:9px;min-width:0}
+  .actions .grp.l{justify-content:flex-end}
+  .actions .grp.r{justify-content:flex-start}
+  #fit{
+    position:fixed;z-index:3;right:12px;
+    top:calc(env(safe-area-inset-top,0px) + 8px);
+    font:inherit;font-size:12px;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:999px;padding:7px 12px;
+    backdrop-filter:blur(12px);cursor:pointer;white-space:nowrap;
+  }
+  #fit[aria-pressed="true"]{background:rgba(77,141,255,.28);border-color:rgba(77,141,255,.6)}
+  /* 진단용 — 주소 끝에 ?debug=1 을 붙였을 때만 보입니다 */
+  #dbg{
+    position:fixed;z-index:5;left:8px;top:calc(env(safe-area-inset-top,0px) + 8px);
+    max-width:min(74vw,460px);margin:0;padding:8px 10px;border-radius:10px;
+    background:rgba(0,0,0,.72);color:#9ff;font:600 11px/1.45 ui-monospace,Menlo,monospace;
+    white-space:pre-wrap;word-break:break-all;pointer-events:none;
+  }
+  .actions button{
+    font:inherit;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:13px;
+    padding:11px 14px;font-size:13px;white-space:nowrap;
+    cursor:pointer;backdrop-filter:blur(12px);
+  }
+  .actions button[aria-pressed="true"]{background:rgba(77,141,255,.28);border-color:rgba(77,141,255,.6)}
+  #shoot{
+    width:62px;height:62px;border-radius:50%;padding:0;
+    border:3px solid #fff;background:rgba(255,255,255,.92);
+    box-shadow:0 0 0 2px rgba(0,0,0,.35);
+    font-size:0;flex:none;
+  }
+  #shoot:active{transform:scale(.94)}
+
+  /* ---- 시작 화면 ---- */
+  #intro{
+    position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:18px;text-align:center;
+    padding:32px 24px;background:radial-gradient(120% 90% at 50% 15%,#16224a,#05070f 70%);
+  }
+  #intro h1{margin:0;font-size:clamp(28px,7vw,40px);font-weight:600;letter-spacing:-.02em;text-wrap:balance}
+  #intro p{margin:0;max-width:30em;color:var(--dim);font-size:14px;line-height:1.7}
+  #start{
+    font:inherit;font-size:16px;font-weight:600;color:#05070f;background:#8fc0ff;
+    border:0;border-radius:999px;padding:15px 40px;cursor:pointer;margin-top:6px;
+  }
+  #intro .pick{display:flex;flex-direction:column;gap:10px;width:min(22em,100%);margin-top:6px}
+  #intro .pick button{width:100%;margin-top:0}
+  #start.alt,#startMine{
+    font:inherit;font-size:16px;font-weight:600;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:999px;padding:15px 40px;cursor:pointer;
+  }
+  #start:disabled,#startMine:disabled{opacity:.5;cursor:default}
+  #err{color:#ff9d9d;font-size:13px;max-width:30em;line-height:1.6}
+  /* ---- 디자인 모드 ---- */
+  #design{
+    position:fixed;inset:0;z-index:30;display:flex;flex-direction:column;
+    background:radial-gradient(120% 90% at 50% 10%,#16224a,#05070f 70%);
+  }
+  #design[hidden]{display:none}
+  #design header{
+    display:flex;align-items:center;gap:10px;padding:10px 14px;
+    padding-top:calc(env(safe-area-inset-top,0px) + 10px);
+    border-bottom:1px solid var(--line);flex:none;
+  }
+  #design header .steps{flex:1;display:flex;gap:8px;justify-content:center;font-size:12px}
+  #design header .steps span{color:var(--dim);padding:5px 11px;border-radius:999px;
+    border:1px solid transparent;white-space:nowrap}
+  #design header .steps span.on{color:var(--ink);background:rgba(77,141,255,.22);
+    border-color:rgba(77,141,255,.55)}
+  #design header button{font:inherit;font-size:14px;font-weight:600;cursor:pointer;
+    border-radius:999px;padding:9px 16px;border:1px solid var(--line);
+    background:var(--panel);color:var(--ink);white-space:nowrap}
+  #design header button.go{background:#8fc0ff;color:#05070f;border-color:transparent}
+  #design .pane{flex:1;min-height:0;display:flex;flex-direction:column}
+  #design .pane[hidden]{display:none}
+
+  /* 1단계 — 모양 고르기 */
+  #dsShapes{overflow-y:auto;gap:12px;
+    padding:16px 16px calc(env(safe-area-inset-bottom,0px) + var(--badge) + 8px);
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));align-content:start}
+  #dsShapes button{
+    font:inherit;cursor:pointer;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:18px;padding:10px 8px 12px;
+    display:flex;flex-direction:column;align-items:center;gap:6px;font-size:13px;
+  }
+  #dsShapes button[aria-pressed="true"]{background:rgba(77,141,255,.22);border-color:rgba(77,141,255,.7)}
+  #dsShapes canvas{width:100%;height:auto;aspect-ratio:4/3}
+
+  /* 2단계 — 색칠하기 */
+  #dsPaint{padding:10px 12px calc(env(safe-area-inset-bottom,0px) + var(--badge));gap:10px}
+  #dsCanvas{flex:1;min-height:0;width:100%;touch-action:none;border-radius:16px;
+    background:transparent;cursor:crosshair}
+  #dsTools{flex:none;display:flex;flex-direction:column;gap:10px}
+  .dsrow{display:flex;align-items:center;gap:10px}
+  #dsWheelWrap{position:relative;flex:none;width:118px;height:118px}
+  #dsWheel{width:118px;height:118px;touch-action:none;border-radius:50%;cursor:crosshair;
+    box-shadow:0 0 0 1px var(--line)}
+  #dsDot{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;
+    border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.6);pointer-events:none}
+  .dscol{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+  .dstabs{display:flex;gap:6px}
+  .dstabs button{flex:1;font:inherit;font-size:12px;cursor:pointer;color:var(--ink);
+    background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:8px 6px}
+  .dstabs button[aria-pressed="true"]{box-shadow:0 0 0 2px #8fc0ff inset}
+  .dstabs button.swap{flex:0 0 38px;padding:0;display:grid;place-items:center;
+    background:var(--panel);color:var(--ink)}
+  .dstabs button.swap svg{width:19px;height:19px;fill:none;stroke:currentColor;
+    stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .dstabs button.swap:active{transform:scale(.92)}
+  .dstabs button.off{opacity:.45}
+
+  #dsSwatches{display:flex;flex-wrap:wrap;gap:6px}
+  #dsSwatches button{width:26px;height:26px;border-radius:50%;cursor:pointer;
+    border:1px solid rgba(255,255,255,.35);padding:0}
+  #design label{font-size:11px;color:var(--dim);display:flex;align-items:center;gap:8px}
+  #design label input[type=range]{flex:1;accent-color:#8fc0ff;min-width:0}
+  /* 지금 붓이 얼마나 굵은지 그대로 보여 줍니다 */
+  #dsTip{flex:none;width:30px;height:30px;display:grid;place-items:center}
+  #dsTip::after{content:"";display:block;border-radius:50%;background:#dbe8ff;
+    width:var(--tip,10px);height:var(--tip,10px)}
+  #dsActs{display:flex;gap:7px;flex-wrap:wrap}
+  #dsActs button{flex:1 1 auto;font:inherit;font-size:12.5px;cursor:pointer;color:var(--ink);
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 8px;white-space:nowrap}
+  #dsActs button[aria-pressed="true"]{background:rgba(255,160,90,.26);border-color:rgba(255,160,90,.7)}
+  #dsActs button#dsGrad[aria-pressed="true"]{background:rgba(110,205,165,.26);border-color:rgba(110,205,165,.75)}
+  #dsHint{margin:0;font-size:11.5px;line-height:1.5;color:#9fd9bd}
+  #dsHint[hidden]{display:none}
+
+  /* ---- 인앱 브라우저 안내 (카카오톡·페이스북 등) ---- */
+  /* hidden 속성이 display:flex 에 지면 안 됩니다 — 안 보이면서 화면을 막아 버립니다 */
+  #inapp[hidden]{display:none}
+  #inapp{
+    position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
+    padding:24px 20px;overflow-y:auto;
+    background:radial-gradient(120% 90% at 50% 15%,#16224a,#05070f 70%);
+  }
+  #inapp .card{
+    width:min(30em,100%);display:flex;flex-direction:column;align-items:center;
+    gap:14px;text-align:center;margin:auto;
+  }
+  #inapp svg{width:54px;height:54px;opacity:.92}
+  #inapp h2{margin:0;font-size:clamp(20px,5.4vw,26px);font-weight:600;letter-spacing:-.02em;text-wrap:balance}
+  #inapp p{margin:0;color:var(--dim);font-size:14px;line-height:1.75}
+  #inapp ol{margin:2px 0 0;padding:0;list-style:none;width:100%;
+    display:flex;flex-direction:column;gap:8px;text-align:left}
+  #inapp li{display:flex;gap:10px;align-items:flex-start;color:var(--ink);
+    font-size:14px;line-height:1.6;background:var(--panel);
+    border:1px solid var(--line);border-radius:14px;padding:11px 13px}
+  #inapp li b{flex:none;width:22px;height:22px;border-radius:50%;background:#8fc0ff;
+    color:#05070f;font-size:12px;font-weight:700;display:grid;place-items:center;margin-top:1px}
+  #inapp .url{width:100%;font:600 12px/1.5 ui-monospace,Menlo,monospace;color:var(--dim);
+    background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:12px;
+    padding:10px 12px;word-break:break-all;user-select:all;-webkit-user-select:all}
+  #inapp .btns{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;width:100%}
+  #inapp .btns button{font:inherit;font-size:15px;font-weight:600;border:0;border-radius:999px;
+    padding:14px 22px;cursor:pointer;flex:1 1 9em}
+  #inapp .go{color:#05070f;background:#8fc0ff}
+  #inapp .sub{color:var(--ink);background:var(--panel);border:1px solid var(--line)}
+  #inapp .link{font:inherit;font-size:13px;color:var(--dim);background:none;border:0;
+    text-decoration:underline;cursor:pointer;padding:6px}
+
+  /* ---- 도감 카드 ---- */
+  #info{
+    position:fixed;left:16px;right:16px;
+    top:calc(env(safe-area-inset-top,0px) + 58px);
+    max-width:32em;margin-inline:auto;max-height:58vh;overflow-y:auto;
+    background:var(--panel);backdrop-filter:blur(16px);
+    border:1px solid var(--line);border-radius:18px;padding:18px 20px;z-index:12;
+  }
+  #info h2{margin:0 0 12px;font-size:19px;font-weight:600;letter-spacing:-.01em}
+  #info dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:7px 14px;font-size:13px;line-height:1.55}
+  #info dt{color:var(--dim);white-space:nowrap}
+  #info dd{margin:0}
+  #info .fact{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);
+    font-size:13px;line-height:1.65;color:#cfd8f0}
+
+  #flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:15;transition:opacity .35s}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="cam" playsinline autoplay muted></video>
+  <canvas id="out"></canvas>
+</div>
+
+<div id="status"><span id="statusText">몸 전체가 보이게 뒤로 물러나 보세요</span></div>
+<button id="fit" hidden aria-pressed="false" title="켜면 화면을 꽉 채우고 가장자리를 잘라냅니다">꽉 채움</button>
+
+<div id="bar" hidden>
+  <button id="fold" type="button" aria-expanded="true" aria-label="조절 도구 접기"></button>
+  <div class="species" id="species"></div>
+  <div class="sliders">
+    <label for="size">날개 크기<input id="size" type="range" min="80" max="260" value="165"></label>
+    <label for="speed">날갯짓<input id="speed" type="range" min="0" max="160" value="70"></label>
+  </div>
+  <div class="actions">
+    <div class="grp l"><button id="flip">전환</button><button id="guide" aria-pressed="false">도감</button></div>
+    <button id="shoot" aria-label="사진 촬영">촬영</button>
+    <div class="grp r"><button id="per" aria-pressed="false" hidden title="사람마다 다른 나비를 배정합니다">각자</button></div>
+  </div>
+</div>
+
+<div id="info" hidden></div>
+
+<div id="flash"></div>
+<pre id="dbg" hidden></pre>
+
+<div id="intro">
+  <h1>나비 날개 AR</h1>
+  <p>카메라가 어깨를 찾으면 그 뒤로 나비 날개가 펼쳐집니다.
+     날개는 몸을 따라 움직이고, 접히는 각도에 따라 구조색이 바뀝니다.</p>
+  <div class="pick">
+    <button id="start">자연의 나비 고르기</button>
+    <button id="startMine" class="alt">나만의 나비 디자인</button>
+  </div>
+  <p id="err"></p>
+</div>
+
+<!-- 나만의 날개를 만드는 화면 (1 모양 → 2 색칠) -->
+<div id="design" hidden>
+  <header>
+    <button id="dsBack">뒤로</button>
+    <div class="steps"><span id="dsS1" class="on">1 모양</span><span id="dsS2">2 색칠</span></div>
+    <button id="dsNext" class="go">다음</button>
+  </header>
+  <div id="dsShapes" class="pane"></div>
+  <div id="dsPaint" class="pane" hidden>
+    <canvas id="dsCanvas"></canvas>
+    <div id="dsTools">
+      <div class="dsrow">
+        <div id="dsWheelWrap"><canvas id="dsWheel"></canvas><div id="dsDot"></div></div>
+        <div class="dscol">
+          <div class="dstabs">
+            <button id="dsTabFill" aria-pressed="true">색 1</button>
+            <button id="dsSwap" class="swap" title="색 1 ↔ 색 2 (X)" aria-label="색 1과 색 2 바꾸기">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3.5 9h13M12.5 5l4 4-4 4"/>
+                <path d="M20.5 15h-13M11.5 19l-4-4 4-4"/>
+              </svg>
+            </button>
+            <button id="dsTabFill2" aria-pressed="false">색 2</button>
+            <button id="dsTabLine" aria-pressed="false">테두리</button>
+          </div>
+          <label>밝기<input id="dsVal" type="range" min="12" max="100" value="100"></label>
+          <div id="dsSwatches"></div>
+        </div>
+      </div>
+      <p id="dsHint" hidden>그은 방향으로 색이 번집니다 — 몸통 쪽에서 바깥으로 그어 보세요.</p>
+      <label>붓 굵기<input id="dsSize" type="range" min="0" max="100" value="58"><i id="dsTip"></i></label>
+      <div id="dsActs">
+        <button id="dsGrad" aria-pressed="false">그라데이션</button>
+        <button id="dsErase" aria-pressed="false">지우개</button>
+        <button id="dsFill">전체 칠하기</button>
+        <button id="dsUndo">되돌리기</button>
+        <button id="dsClear">처음부터</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 카카오톡·페이스북 등 「앱 안의 브라우저」에서 열렸을 때 나오는 안내.
+     이 브라우저들은 카메라 권한을 아예 주지 않는 경우가 많습니다. -->
+<div id="inapp" hidden>
+  <div class="card">
+    <svg viewBox="0 0 64 64" aria-hidden="true">
+      <g fill="#8fc0ff">
+        <path d="M31 30 C24 16 12 8 5 12 C-1 16 2 32 10 38 C17 43 26 38 31 30Z" opacity=".9"/>
+        <path d="M33 30 C40 16 52 8 59 12 C65 16 62 32 54 38 C47 43 38 38 33 30Z" opacity=".9"/>
+        <path d="M31 32 C26 42 18 50 22 55 C26 59 31 52 32 45 C33 52 38 59 42 55 C46 50 38 42 33 32Z" opacity=".65"/>
+      </g>
+      <ellipse cx="32" cy="33" rx="1.9" ry="13" fill="#dbe8ff"/>
+    </svg>
+    <h2 id="inapp-title">기본 브라우저에서 열어 주세요</h2>
+    <p id="inapp-why"></p>
+    <ol id="inapp-steps"></ol>
+    <p class="url" id="inapp-url"></p>
+    <div class="btns">
+      <button id="inapp-open" class="go" hidden>브라우저로 열기</button>
+      <button id="inapp-copy" class="sub">주소 복사</button>
+    </div>
+    <button id="inapp-skip" class="link">그래도 여기서 해 보기</button>
+  </div>
+</div>
+
+<script>
+/* 「앱 안의 브라우저」 탈출 ─────────────────────────────────────────
+   카카오톡·페이스북 등에서 링크를 누르면 앱이 자기 안의 작은 브라우저로 엽니다.
+   그 브라우저는 카메라를 내주지 않는 경우가 많아, 이 앱은 아예 켜지지 않습니다.
+
+   안드로이드는 바깥 브라우저로 넘길 방법이 있어 자동으로 넘깁니다.
+   아이폰은 앱 밖으로 내보내는 방법이 없어서, 어디를 눌러야 하는지 그림처럼
+   짚어 주고 주소를 복사해 드립니다.
+   이 스크립트는 일부러 모듈 바깥에 두었습니다 — 본체가 무엇을 하든 먼저 뜹니다. */
+(function(){
+  var ua = navigator.userAgent || "";
+  var APPS = [
+    { re: /KAKAOTALK/i,              name: "카카오톡",   ios: "kakao" },
+    { re: /KAKAOSTORY/i,             name: "카카오스토리", ios: "kakao" },
+    { re: /FBAN|FBAV|FB_IAB|FBIOS/i, name: "페이스북",   ios: "meta"  },
+    { re: /Instagram/i,              name: "인스타그램", ios: "meta"  },
+    { re: /Threads/i,                name: "스레드",     ios: "meta"  },
+    { re: /NAVER\(inapp/i,           name: "네이버",     ios: "etc"   },
+    { re: /DaumApps|DaumDevice/i,    name: "다음",       ios: "etc"   },
+    { re: /\bLine\//i,               name: "라인",       ios: "etc"   },
+    { re: /BAND\//i,                 name: "밴드",       ios: "etc"   },
+    { re: /Everytimeapp/i,           name: "에브리타임", ios: "etc"   }
+  ];
+  var hit = null;
+  for (var i = 0; i < APPS.length; i++){ if (APPS[i].re.test(ua)){ hit = APPS[i]; break; } }
+
+  var isAndroid = /Android/i.test(ua);
+  var isIOS = /iPad|iPhone|iPod/.test(ua) ||
+              (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  // 목록에 없는 앱이어도 안드로이드 웹뷰면 「앱 안」입니다
+  if (!hit && isAndroid && /;\s*wv\)/.test(ua)) hit = { name: "앱", ios: "etc" };
+  if (!hit) return;
+
+  var box   = document.getElementById("inapp");
+  var why   = document.getElementById("inapp-why");
+  var steps = document.getElementById("inapp-steps");
+  var urlEl = document.getElementById("inapp-url");
+  var openB = document.getElementById("inapp-open");
+  var copyB = document.getElementById("inapp-copy");
+  var skipB = document.getElementById("inapp-skip");
+  var url   = location.href.split("#")[0];
+
+  why.innerHTML = hit.name + " 안의 브라우저는 카메라를 쓸 수 없습니다.<br>" +
+                  (isIOS ? "사파리" : "크롬") + "에서 열면 바로 됩니다.";
+  urlEl.textContent = url;
+
+  function step(list){
+    steps.innerHTML = "";
+    for (var i = 0; i < list.length; i++){
+      var li = document.createElement("li");
+      var b  = document.createElement("b");
+      b.textContent = String(i + 1);
+      li.appendChild(b);
+      li.appendChild(document.createTextNode(list[i]));
+      steps.appendChild(li);
+    }
+  }
+
+  if (isAndroid){
+    openB.hidden = false;
+    step(["아래 「브라우저로 열기」를 누르세요.",
+          "안 열리면 「주소 복사」를 누르고, 크롬 주소창에 붙여넣어 주세요."]);
+    openB.onclick = jump;
+    setTimeout(jump, 500);          // 대개는 이 한 번으로 넘어갑니다
+  } else if (isIOS && hit.ios === "kakao"){
+    step(["화면 오른쪽 아래 「⋯」(더보기)를 누르세요.",
+          "「다른 브라우저로 열기」 또는 「Safari로 열기」를 고르세요."]);
+  } else if (isIOS && hit.ios === "meta"){
+    step(["화면 오른쪽 위 「⋯」를 누르세요.",
+          "「외부 브라우저로 열기」 또는 「Safari에서 열기」를 고르세요."]);
+  } else {
+    step(["공유 또는 「⋯」(더보기) 메뉴를 누르세요.",
+          "「Safari로 열기」 / 「브라우저로 열기」를 고르세요.",
+          "메뉴에 없으면 「주소 복사」를 눌러 브라우저에 붙여넣어 주세요."]);
+  }
+
+  function jump(){
+    if (/KAKAOTALK/i.test(ua)){
+      // 카카오톡이 직접 제공하는 「바깥 브라우저로 열기」
+      location.href = "kakaotalk://web/openExternal?url=" + encodeURIComponent(url);
+      return;
+    }
+    // 안드로이드 공통 — 크롬으로 넘기고, 크롬이 없으면 원래 주소로 되돌아옵니다
+    location.href = "intent://" + url.replace(/^https?:\/\//, "") +
+      "#Intent;scheme=https;package=com.android.chrome;" +
+      "S.browser_fallback_url=" + encodeURIComponent(url) + ";end";
+  }
+
+  copyB.onclick = function(){
+    var done = function(){
+      copyB.textContent = "복사했습니다";
+      setTimeout(function(){ copyB.textContent = "주소 복사"; }, 2000);
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(url).then(done, fallback);
+        return;
+      }
+    } catch (e){}
+    fallback();
+    function fallback(){
+      try {
+        var t = document.createElement("textarea");
+        t.value = url;
+        t.setAttribute("readonly", "");
+        t.style.cssText = "position:fixed;left:-9999px;top:0";
+        document.body.appendChild(t);
+        t.select(); t.setSelectionRange(0, url.length);
+        document.execCommand("copy");
+        document.body.removeChild(t);
+        done();
+      } catch (e){
+        copyB.textContent = "위 주소를 길게 눌러 복사";
+      }
+    }
+  };
+
+  skipB.onclick = function(){ box.hidden = true; };
+  box.hidden = false;
+})();
+</script>
+
+<script type="module">
+import { FilesetResolver, PoseLandmarker }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+/* ────────────────────────────────────────────────────────────
+   1. 날개 렌더 엔진
+
+   종별 데이터는 butterflies.json 에 있습니다. 이 파일에는 "그리는 법"만
+   있고 "무엇을 그릴지"는 없습니다 — 종을 추가할 때 이 코드는 건드리지
+   않습니다.
+
+   좌표는 날개 뿌리를 (0,0)으로, 날개 폭 1.0을 기준으로 한 비율입니다.
+   ──────────────────────────────────────────────────────────── */
+
+const TEX_W = 640, TEX_H = 920;   // 텍스처 캔버스 크기(px)
+const SPAN  = 470;                // 날개 폭 1.0 = 470px
+const ROOT  = { x: 28, y: 400 };  // 날개 뿌리(어깨에 붙는 점)
+/* 텍스처를 실제로 몇 픽셀로 구울지 — 그림 좌표는 그대로 두고 해상도만 바꿉니다.
+   화면에 그릴 때 늘 TEX_W×TEX_H 크기로 펴서 그리므로 결과 크기는 같습니다. */
+let TEX_K = 1;
+
+const px = (ux, uy) => [ROOT.x + ux * SPAN, ROOT.y + uy * SPAN];
+
+/* 바깥 가장자리의 물결(거치) ───────────────────────────────
+   공작나비·붉은제독처럼 네발나비과는 날개 가장자리가 매끈하지 않고 우글우글합니다.
+   윤곽을 점으로 풀어, 뿌리에서 먼 쪽일수록 세게 안쪽으로 베어 물면 그 모양이 납니다.
+     n = 물결 개수 · d = 깊이(날개폭 비율) · from = 물결이 시작되는 거리 비율 */
+const waveCache = new WeakMap();
+function wavePts(segs, sc){
+  const key = sc.n + "/" + sc.d + "/" + (sc.from ?? 0.5);
+  let box = waveCache.get(segs);
+  if (box && box[key]) return box[key];
+  if (!box){ box = {}; waveCache.set(segs, box); }
+
+  const pts = [];
+  const STEP = 16;
+  let p0 = px(segs[0][0], segs[0][1]);
+  pts.push(p0);
+  for (let i = 1; i < segs.length; i++){
+    const q = segs[i];
+    const c1 = px(q[0], q[1]), c2 = px(q[2], q[3]), p1 = px(q[4], q[5]);
+    for (let t = 1; t <= STEP; t++){
+      const u = t / STEP, v = 1 - u;
+      pts.push([ v*v*v*p0[0] + 3*v*v*u*c1[0] + 3*v*u*u*c2[0] + u*u*u*p1[0],
+                 v*v*v*p0[1] + 3*v*v*u*c1[1] + 3*v*u*u*c2[1] + u*u*u*p1[1] ]);
+    }
+    p0 = p1;
+  }
+
+  let rmax = 1, amin = Infinity, amax = -Infinity;
+  const pol = pts.map(p => {
+    const dx = p[0] - ROOT.x, dy = p[1] - ROOT.y;
+    const r = Math.hypot(dx, dy) || 1;
+    rmax = Math.max(rmax, r);
+    return { dx, dy, r, a: Math.atan2(dy, dx) };
+  });
+  const from = sc.from ?? 0.5;
+  for (const q of pol) if (q.r / rmax > from){ amin = Math.min(amin, q.a); amax = Math.max(amax, q.a); }
+  const span = (amax - amin) || 1;
+  const depth = (sc.d ?? 0.035) * SPAN, n = sc.n ?? 7;
+
+  const out = pts.map((p, i) => {
+    const q = pol[i];
+    const w = Math.max(0, Math.min(1, (q.r / rmax - from) / (1 - from)));
+    if (w <= 0) return p;
+    const u = (q.a - amin) / span;
+    const bite = depth * w * w * (0.5 - 0.5 * Math.cos(2 * Math.PI * n * u));
+    return [p[0] - q.dx / q.r * bite, p[1] - q.dy / q.r * bite];
+  });
+  box[key] = out;
+  return out;
+}
+
+// [시작점, 베지어 구간…] → 열린 채로 현재 경로에 이어 붙입니다 (여러 장 합칠 때)
+function appendPath(ctx, segs, sc){
+  if (sc){
+    const pts = wavePts(segs, sc);
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    return;
+  }
+  ctx.moveTo(...px(segs[0][0], segs[0][1]));
+  for (let i = 1; i < segs.length; i++){
+    const q = segs[i];
+    ctx.bezierCurveTo(...px(q[0], q[1]), ...px(q[2], q[3]), ...px(q[4], q[5]));
+  }
+  ctx.closePath();
+}
+
+// [시작점, 베지어 구간…] → 닫힌 경로
+function pathFrom(ctx, segs, sc){
+  ctx.beginPath();
+  appendPath(ctx, segs, sc);
+}
+
+// "$bright" 같은 팔레트 참조를 실제 색으로
+const hue = (pal, c) => (typeof c === "string" && c[0] === "$") ? (pal[c.slice(1)] || "#000") : c;
+
+/* ── 바탕 ──────────────────────────────────────────────────── */
+
+function paintMembrane(ctx, sp, path){
+  const pal = sp.palette;
+  ctx.save();
+  path(ctx);
+  ctx.clip();
+  ctx.globalAlpha = (sp.membrane ?? 1);          // 1 미만이면 유리날개처럼 비칩니다
+  const g = ctx.createRadialGradient(ROOT.x, ROOT.y, SPAN*0.04, ROOT.x, ROOT.y, SPAN*1.05);
+  g.addColorStop(0.00, pal.deep);
+  g.addColorStop(0.38, pal.mid);
+  g.addColorStop(0.68, pal.bright);
+  g.addColorStop(0.88, pal.mid);
+  g.addColorStop(1.00, pal.deep);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, TEX_W, TEX_H);
+
+  const s = ctx.createLinearGradient(...px(0.15,-0.55), ...px(0.95,-0.10));
+  s.addColorStop(0, "rgba(255,255,255,0)");
+  s.addColorStop(.5, "rgba(255,255,255,.30)");
+  s.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = s;
+  ctx.fillRect(0, 0, TEX_W, TEX_H);
+  ctx.restore();
+}
+
+function paintVeins(ctx, sp, path, edge){
+  const v = sp.veins || { alpha: 0.3, width: 1 };
+  ctx.save();
+  path(ctx);
+  ctx.clip();
+  ctx.strokeStyle = sp.palette.edge;
+  ctx.globalAlpha = v.alpha;
+  ctx.lineCap = "round";
+  edge.forEach(([ux, uy], i) => {
+    const bow = (i % 2 ? 0.035 : -0.030);
+    ctx.lineWidth = (5.5 - 2.8 * (i / edge.length)) * (v.width || 1);
+    ctx.beginPath();
+    ctx.moveTo(ROOT.x, ROOT.y);
+    ctx.quadraticCurveTo(...px(ux * 0.48 + bow, uy * 0.46 + bow), ...px(ux * 1.04, uy * 1.04));
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+function paintMargin(ctx, sp, path, band){
+  ctx.save();
+  path(ctx);
+  ctx.clip();
+  path(ctx);
+  ctx.strokeStyle = sp.palette.edge;
+  ctx.lineWidth = band * 2;   // clip 덕분에 절반만 안쪽에 남음
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ── 무늬 연산자 ────────────────────────────────────────────
+   butterflies.json 의 marks 배열이 여기 함수들을 호출합니다.     */
+
+const OPS = {
+  // 가장자리를 따라 늘어선 흰 점 두 줄
+  dots(ctx, sp, segs, edge, m){
+    ctx.fillStyle = hue(sp.palette, m.color || "$spots");
+    let s = m.seed || 7919;
+    const rnd = () => (s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296;
+    for (let i = 0; i < edge.length - 1; i++){
+      for (let k = 0; k < 2; k++){
+        const t = (k + 0.5) / 2;
+        const ux = edge[i][0] + (edge[i+1][0] - edge[i][0]) * t;
+        const uy = edge[i][1] + (edge[i+1][1] - edge[i][1]) * t;
+        const r = SPAN * (0.013 + rnd() * 0.009);
+        for (const [inset, alpha, k2] of [[0.965, 0.88, 1], [0.885, 0.34, 0.62]]){
+          ctx.globalAlpha = alpha * (0.72 + rnd() * 0.28);
+          ctx.beginPath();
+          ctx.ellipse(...px(ux * inset, uy * inset), r * k2, r * k2 * 0.7,
+                      Math.atan2(uy, ux), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+  },
+
+  // 테두리 안쪽에 박힌 초승달
+  lunules(ctx, sp, segs, edge, m){
+    ctx.fillStyle = hue(sp.palette, m.color);
+    ctx.globalAlpha = m.alpha ?? 0.9;
+    for (let i = 0; i < edge.length - 1; i++){
+      for (let k = 0; k < 2; k++){
+        const t = (k + 0.5) / 2;
+        const ux = edge[i][0] + (edge[i+1][0] - edge[i][0]) * t;
+        const uy = edge[i][1] + (edge[i+1][1] - edge[i][1]) * t;
+        ctx.beginPath();
+        ctx.ellipse(...px(ux * m.inset, uy * m.inset), SPAN * m.r, SPAN * m.r * 0.52,
+                    Math.atan2(uy, ux), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  },
+
+  // 둥근 반점 하나
+  spot(ctx, sp, segs, edge, m){
+    ctx.globalAlpha = m.alpha ?? 1;
+    ctx.fillStyle = hue(sp.palette, m.color);
+    ctx.beginPath();
+    ctx.ellipse(...px(m.x, m.y), SPAN * m.r, SPAN * m.r * 0.82,
+                Math.atan2(m.y, m.x), 0, Math.PI * 2);
+    ctx.fill();
+  },
+
+  // 동심원 눈알 무늬 — rings 는 바깥에서 안쪽 순서
+  eyespot(ctx, sp, segs, edge, m){
+    ctx.globalAlpha = m.alpha ?? 1;
+    const [cx, cy] = px(m.x, m.y);
+    for (const [frac, color] of m.rings){
+      ctx.fillStyle = hue(sp.palette, color);
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, SPAN * m.r * frac, SPAN * m.r * frac * 0.92, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  },
+
+  // 가장자리가 번지는 큰 얼룩
+  blotch(ctx, sp, segs, edge, m){
+    ctx.globalAlpha = m.alpha ?? 1;
+    const col = hue(sp.palette, m.color);
+    const [cx, cy] = px(m.x, m.y);
+    const g = ctx.createRadialGradient(cx, cy, SPAN * m.r * 0.35, cx, cy, SPAN * m.r);
+    g.addColorStop(0, col);
+    g.addColorStop(0.72, col);
+    g.addColorStop(1, col.length === 7 ? col + "00" : col);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, SPAN * m.r, 0, Math.PI * 2);
+    ctx.fill();
+  },
+
+  // 두 점을 잇는 굵은 띠
+  band(ctx, sp, segs, edge, m){
+    ctx.globalAlpha = m.alpha ?? 1;
+    ctx.strokeStyle = hue(sp.palette, m.color);
+    ctx.lineWidth = SPAN * m.width;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(...px(m.from[0], m.from[1]));
+    ctx.lineTo(...px(m.to[0], m.to[1]));
+    ctx.stroke();
+  },
+
+  // 뿌리를 중심으로 한 가로 줄무늬 — 날개를 가로지르는 띠가 됩니다
+  bars(ctx, sp, segs, edge, m){
+    ctx.globalAlpha = m.alpha ?? 1;
+    ctx.strokeStyle = hue(sp.palette, m.color);
+    ctx.lineWidth = SPAN * m.width;
+    for (const r of m.radii){
+      ctx.beginPath();
+      ctx.arc(ROOT.x, ROOT.y, SPAN * r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  },
+
+  // 가장자리를 따라가는 가는 선
+  hairline(ctx, sp, segs, edge, m){
+    const pts = edge.slice(m.from ?? 0, m.to ?? edge.length);
+    ctx.strokeStyle = hue(sp.palette, m.color);
+    ctx.globalAlpha = m.alpha ?? 0.5;
+    ctx.lineWidth = SPAN * (m.width || 0.011);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    pts.forEach(([ux, uy], i) => {
+      const q = px(ux * m.inset, uy * m.inset);
+      i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+    });
+    ctx.stroke();
+  }
+};
+
+let noiseTile = null;
+function getNoiseTile(){
+  if (noiseTile) return noiseTile;
+  const n = document.createElement("canvas");
+  n.width = n.height = 192;
+  const c = n.getContext("2d");
+  const img = c.createImageData(192, 192), d = img.data;
+  for (let i = 0; i < d.length; i += 4){
+    const v = 128 + (Math.random() - 0.5) * 74;
+    d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
+  }
+  c.putImageData(img, 0, 0);
+  return (noiseTile = n);
+}
+function paintScaleNoise(ctx, path, alpha){
+  ctx.save();
+  path(ctx);
+  ctx.clip();
+  ctx.globalCompositeOperation = "overlay";
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = ctx.createPattern(getNoiseTile(), "repeat");
+  ctx.fillRect(0, 0, TEX_W, TEX_H);
+  ctx.restore();
+}
+
+/* 꼬리 달린 뒷날개의 테두리 ─────────────────────────────────
+   호랑나비·부전나비의 꼬리는 따로 붙인 조각이 아니라 날개에서 자라난 부분입니다.
+   그런데 두 장에 각각 테두리를 두르면, 뒷날개의 굵은 테두리가 꼬리 뿌리를
+   가로질러 "덧댄 것"처럼 보였습니다.
+   그래서 한 장의 테두리를 그릴 때 다른 장의 안쪽을 잘라 냅니다. 그러면 겹친
+   속에는 선이 남지 않고, 두 장을 합친 바깥 실루엣만 따라 이어집니다. */
+function clipOutside(g, hole){
+  // 큰 사각형과 구멍을 evenodd 로 함께 자르면 "그 모양 바깥"만 남습니다
+  g.beginPath();
+  g.rect(-TEX_W, -TEX_H, TEX_W * 3, TEX_H * 3);
+  hole(g);
+  g.clip("evenodd");
+}
+function paintUnionMargin(ctx, sp, a, b, bandA, bandB){
+  for (const [self, other, w] of [[a, b, bandA], [b, a, bandB]]){
+    ctx.save();
+    ctx.beginPath(); self(ctx); ctx.clip();      // clip 덕분에 절반만 안쪽에 남습니다
+    clipOutside(ctx, other);                     // 이음매의 가로줄이 여기서 사라집니다
+    ctx.strokeStyle = sp.palette.edge;
+    ctx.lineWidth = w * 2;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.beginPath(); self(ctx); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ── 한 종의 날개 텍스처 만들기 ─────────────────────────────── */
+
+function buildWing(rec){
+  const sp = rec.render;
+  const c = document.createElement("canvas");
+  c.width  = Math.max(2, Math.round(TEX_W * TEX_K));
+  c.height = Math.max(2, Math.round(TEX_H * TEX_K));
+  const ctx = c.getContext("2d");
+  ctx.scale(TEX_K, TEX_K);          // 좌표는 그대로, 픽셀만 줄여 굽습니다
+
+  // 꼬리 → 뒷날개 → 앞날개 순서로 겹칩니다 (실제 나비의 겹침 순서)
+  const sc = sp.scallop || null;          // { fore, hind } — 없으면 매끈한 가장자리
+  const parts = [];
+  if (sp.tail) parts.push({ key: "tail", segs: sp.tail, edge: null, band: SPAN * (sp.band.tail || 0.02) });
+  parts.push({ key: "hind", segs: sp.hind, edge: sp.hindEdge, band: SPAN * sp.band.hind,
+               sc: sc && sc.hind });
+  parts.push({ key: "fore", segs: sp.fore, edge: sp.foreEdge, band: SPAN * sp.band.fore,
+               sc: sc && sc.fore });
+
+  // 꼬리가 있으면 뒷날개와 한 덩어리로 봅니다 — 바탕은 같은 그라데이션이라
+  // 따로 칠해도 티가 나지 않고, 날개맥과 테두리만 합친 모양을 기준으로 그립니다.
+  const tailSegs = sp.tail || null;
+  const hindSeg = cx => appendPath(cx, sp.hind, sc && sc.hind);
+  const tailSeg = cx => appendPath(cx, tailSegs);
+  const unionClip = cx => { cx.beginPath(); hindSeg(cx); tailSeg(cx); };
+
+  for (const part of parts){
+    const path = cx => pathFrom(cx, part.segs, part.sc);
+    paintMembrane(ctx, sp, path);
+    if (part.key === "tail") continue;            // 테두리·날개맥은 뒷날개 차례에 함께
+    if (part.key === "hind" && tailSegs){
+      paintVeins(ctx, sp, unionClip, part.edge);  // 날개맥 한 줄이 꼬리까지 이어집니다
+      paintUnionMargin(ctx, sp, hindSeg, tailSeg, part.band,
+                       SPAN * (sp.band.tail || sp.band.hind * 0.5));
+      continue;
+    }
+    if (part.edge) paintVeins(ctx, sp, path, part.edge);
+    paintMargin(ctx, sp, path, part.band);
+  }
+
+  // 무늬 — 각 무늬는 자기 날개 안으로 잘립니다
+  const drawMark = (g, m, part, fn) => {
+    g.save();
+    pathFrom(g, part.segs, part.sc);
+    g.clip();
+    fn(g, sp, part.segs, part.edge || [], m);
+    g.restore();
+  };
+  for (const m of (sp.marks || [])){
+    const part = parts.find(p => p.key === m.wing);
+    const fn = OPS[m.op];
+    if (!part || !fn) continue;
+    if (part.key === "hind" && tailSegs){
+      // 꼬리가 돋아난 자리에는 가장자리가 없으므로, 그 둘레의 테두리 무늬도 빼 줍니다.
+      // (그대로 두면 초승달 무늬 하나가 꼬리 뿌리에 혼자 떠 있습니다)
+      ctx.save();
+      clipOutside(ctx, tailSeg);
+      drawMark(ctx, m, part, fn);
+      ctx.restore();
+      continue;
+    }
+    drawMark(ctx, m, part, fn);
+  }
+
+  // 비늘 질감 — 투명한 종은 약하게
+  const grain = 0.22 * (sp.membrane ?? 1);
+  for (const part of parts){
+    if (part.key === "tail" && tailSegs) continue;           // 뒷날개와 함께 한 번만
+    paintScaleNoise(ctx, (part.key === "hind" && tailSegs)
+      ? unionClip : cx => pathFrom(cx, part.segs, part.sc), grain);
+  }
+
+  // 몸통 쪽 그림자 — 어깨에 붙은 느낌.
+  // "multiply" 로 칠하면 색은 곱해지지만 투명도는 source-over 규칙을 따라서,
+  // 날개가 없는 빈 곳에도 검은 그라데이션이 그대로 남습니다. 그 얼룩이 어깨 둘레에
+  // 날개를 따라다녔습니다. "source-atop" 은 이미 그려진 날개 안쪽에만 얹히는데,
+  // 검은색으로 칠할 때의 결과 색은 multiply 와 똑같습니다 — 보기엔 그대로, 얼룩만 사라집니다.
+  ctx.save();
+  ctx.globalCompositeOperation = "source-atop";
+  const sh = ctx.createRadialGradient(ROOT.x, ROOT.y, 0, ROOT.x, ROOT.y, SPAN*0.24);
+  sh.addColorStop(0, "rgba(0,0,0,.45)");
+  sh.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = sh;
+  ctx.fillRect(0,0,TEX_W,TEX_H);
+  ctx.restore();
+
+  return c;
+}
+
+/* 도감 데이터는 시작할 때 불러옵니다 */
+let SPECIES = {};          // id → 레코드
+let SPECIES_KEYS = [];
+const wingTex = {};
+
+async function loadSpecies(){
+  const res = await fetch("butterflies.json?v=" + Date.now(), { cache: "no-store" });
+  if (!res.ok) throw new Error("도감 파일을 불러오지 못했습니다 (" + res.status + ")");
+  const data = await res.json();
+  for (const rec of data.species){
+    SPECIES[rec.id] = rec;
+    SPECIES_KEYS.push(rec.id);
+  }
+  if (!SPECIES_KEYS.length) throw new Error("도감이 비어 있습니다");
+}
+
+/* 텍스처는 화면에 실제로 쓰이는 종만, 처음 필요할 때 만듭니다.
+   한 장이 640×920 = 약 2.4 MB라 종이 늘어도 메모리가 같이 늘면 안 됩니다. */
+function texFor(id){
+  let c = wingTex[id];
+  if (!c){
+    c = wingTex[id] = (id === MINE) ? buildMineTex() : buildWing(SPECIES[id]);
+    // 메모리가 빠듯한 기기(구형 아이패드 등)는 화면에 붙어 있지 않은 캔버스의
+    // 내용을 조용히 비워 버립니다. 그러면 오류 없이 "투명한 날개"만 그려집니다.
+    DBG.texpx = inkOf(c);
+    if (DBG.texpx === 0){
+      c = wingTex[id] = (id === MINE) ? buildMineTex() : buildWing(SPECIES[id]);
+      DBG.texpx = inkOf(c);
+    }
+  }
+  return c;
+}
+
+/* 빛 번짐(글로우)은 프레임마다 blur 를 걸면 이 앱에서 가장 비싼 작업이 됩니다.
+   어차피 뭉개지는 그림이므로 종마다 한 번, 작게 흐려서 만들어 두고 늘려 씁니다. */
+const CAN_FILTER = (() => {
+  try {
+    const c = document.createElement("canvas").getContext("2d");
+    c.filter = "blur(2px)";
+    return c.filter === "blur(2px)";
+  } catch (e){ return false; }
+})();
+
+/* 「blur 를 지원한다」고 말하는 것과 「제대로 흐려 준다」는 건 다릅니다.
+   구형 사파리는 지원한다고 해 놓고 흐리기를 건너뛰거나, 반대로 투명도를
+   캔버스 전체로 퍼뜨려 버립니다. 앞은 날개 둘레에 네모난 얼룩을 남기고,
+   뒤는 가림막이 화면을 통째로 덮습니다. 그래서 말만 믿지 않고 한 번 그려 봅니다.
+     · 가운데가 남아 있는가   · 사각형 바깥으로 번졌는가   · 구석까지 번지진 않았는가 */
+const BLUR_REAL = (() => {
+  if (!CAN_FILTER) return false;
+  try {
+    const s = document.createElement("canvas"); s.width = s.height = 40;
+    const sx = s.getContext("2d");
+    sx.fillStyle = "#fff"; sx.fillRect(16, 16, 8, 8);
+
+    const d = document.createElement("canvas"); d.width = d.height = 40;
+    const dx = d.getContext("2d", { willReadFrequently: true });
+    dx.filter = "blur(3px)";
+    dx.drawImage(s, 0, 0);
+    dx.filter = "none";
+
+    const at = (x, y) => dx.getImageData(x, y, 1, 1).data[3];
+    return at(20, 20) > 60 && at(27, 20) > 4 && at(1, 1) < 12;
+  } catch (e){ return false; }
+})();
+
+const glowTex = {};
+const GLOW_S  = 0.28;
+function glowFor(id){
+  if (!blurOK) return null;          // 흐리기를 못 믿는 기기에서는 글로우를 아예 안 씁니다
+  if (glowTex[id]) return glowTex[id];
+  const src = texFor(id);
+  const g = document.createElement("canvas");
+  g.width  = Math.max(2, Math.round(TEX_W * GLOW_S));
+  g.height = Math.max(2, Math.round(TEX_H * GLOW_S));
+  const gx = g.getContext("2d");
+  gx.filter = `blur(${Math.max(1, SPAN * 0.045 * GLOW_S).toFixed(1)}px)`;
+  gx.drawImage(src, 0, 0, g.width, g.height);
+  gx.filter = "none";
+  glowTex[id] = g;
+  return g;
+}
+
+/* ────────────────────────────────────────────────────────────
+   2. 상태 & UI
+   ──────────────────────────────────────────────────────────── */
+
+/* 새로고침할 때마다 다음 종으로 넘어갑니다 (사람별 배정은 나중에) */
+/* ════════════════════════════════════════════════════════════════
+   나만의 나비 디자인
+
+   칠한 그림은 「획」으로 보관합니다 — 되돌리기가 싸고, 저장해도 몇 KB뿐이며,
+   나중에 다시 열어 이어 그릴 수 있습니다. 칠하지 않은 곳은 그대로 비어 있어
+   날개의 투명한 부분이 되고, 테두리만 늘 가는 실선으로 남습니다.
+   ════════════════════════════════════════════════════════════════ */
+const MINE = "mine";
+const SHAPE_IDS = ["morpho", "xuthus", "monarch", "rapae", "owl", "birdwing"];
+const SHAPE_NAMES = { morpho:"둥근 날개", xuthus:"제비 꼬리", monarch:"길쭉한 날개",
+                      rapae:"작고 동그란", owl:"넓은 날개", birdwing:"뾰족한 날개" };
+
+/* mine = { shape, line, strokes:[ {c,w,e,p:[x,y,…]} | {fill:"#rgb"} ] } */
+let mine = null;
+let minePaint = null;      // 칠한 그림만 담는 캔버스 (TEX_W×TEX_H)
+
+function mineParts(shape){
+  const sp = (SPECIES[shape] || {}).render;
+  if (!sp) return [];
+  const sc = sp.scallop || null;          // 물결 테두리도 그대로 따라갑니다
+  const out = [];
+  if (sp.tail) out.push({ k: "tail", s: sp.tail, c: null });
+  out.push({ k: "hind", s: sp.hind, c: sc && sc.hind },
+           { k: "fore", s: sp.fore, c: sc && sc.fore });
+  return out;
+}
+
+/* 모양 윤곽선 — 꼬리는 뒷날개에서 자라난 부분이라 맞닿은 선을 긋지 않습니다.
+   (그냥 각자 그으면 꼬리 뿌리에 가로줄이 생겨 덧댄 것처럼 보입니다) */
+function strokeShape(g, parts){
+  const tail = parts.find(p => p.k === "tail");
+  const hind = parts.find(p => p.k === "hind");
+  for (const p of parts){
+    const hole = tail && (p === tail ? hind : (p === hind ? tail : null));
+    if (hole){
+      g.save();
+      clipOutside(g, cx => appendPath(cx, hole.s, hole.c));
+      pathFrom(g, p.s, p.c); g.stroke();
+      g.restore();
+    } else {
+      pathFrom(g, p.s, p.c); g.stroke();
+    }
+  }
+}
+
+/* 날개 모양이 실제로 차지하는 범위 — 몸통·더듬이까지 포함해서 잽니다 */
+function shapeBox(parts){
+  let half = 1, y0 = ROOT.y - 230, y1 = ROOT.y + 235;   // 몸통과 더듬이 자리
+  for (const part of parts) for (const q of part.s)
+    for (let i = 0; i < q.length; i += 2){
+      const [X, Y] = px(q[i], q[i+1]);
+      half = Math.max(half, Math.abs(X - ROOT.x));
+      y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+    }
+  return { half, y0, y1, cy: (y0 + y1) / 2 };
+}
+
+function loadMine(){
+  try {
+    const raw = localStorage.getItem("wingMine");
+    if (!raw) return null;
+    const m = JSON.parse(raw);
+    if (!m || !m.shape || !Array.isArray(m.strokes)) return null;
+    if (!SPECIES[m.shape]) return null;
+    return m;
+  } catch (e){ return null; }
+}
+function saveMine(){
+  try { localStorage.setItem("wingMine", JSON.stringify(mine)); } catch (e){}
+}
+
+/* 획을 다시 재생해 「칠한 그림」을 만듭니다 */
+function paintCtx(){
+  if (!minePaint){
+    minePaint = document.createElement("canvas");
+    minePaint.width = TEX_W; minePaint.height = TEX_H;
+  }
+  return minePaint.getContext("2d");
+}
+function drawStroke(g, st){
+  if (st.fill){
+    g.globalCompositeOperation = "source-over";
+    if (st.fill2){
+      // 전체 칠하기는 날개 뿌리 → 바깥쪽으로 번지게 합니다 (진짜 나비가 그렇습니다)
+      const bx = shapeBox(mineParts(mine.shape));
+      const gr = g.createLinearGradient(ROOT.x, 0, ROOT.x + bx.half, 0);
+      gr.addColorStop(0, st.fill); gr.addColorStop(1, st.fill2);
+      g.fillStyle = gr;
+    } else g.fillStyle = st.fill;
+    g.fillRect(0, 0, TEX_W, TEX_H);
+    return;
+  }
+  const p = st.p;
+  if (!p || p.length < 2) return;
+  g.globalCompositeOperation = st.e ? "destination-out" : "source-over";
+  let style = st.c || "#fff";
+  // 한 획 안에서 그은 방향을 따라 색이 바뀝니다
+  if (st.c2 && p.length >= 4){
+    const x0 = p[0], y0 = p[1], x1 = p[p.length-2], y1 = p[p.length-1];
+    if (Math.hypot(x1 - x0, y1 - y0) > 1){
+      const gr = g.createLinearGradient(x0, y0, x1, y1);
+      gr.addColorStop(0, st.c); gr.addColorStop(1, st.c2);
+      style = gr;
+    }
+  }
+  g.strokeStyle = style;
+  g.lineWidth = st.w || 40;
+  g.lineCap = "round"; g.lineJoin = "round";
+  g.beginPath();
+  g.moveTo(p[0], p[1]);
+  if (p.length === 2) g.lineTo(p[0] + 0.01, p[1]);
+  for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i+1]);
+  g.stroke();
+  g.globalCompositeOperation = "source-over";
+}
+function repaintMine(){
+  const g = paintCtx();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = "source-over";
+  g.clearRect(0, 0, TEX_W, TEX_H);
+  for (const st of mine.strokes) drawStroke(g, st);
+}
+
+/* 완성된 날개 텍스처 — 칠한 그림을 날개 모양 안으로만 넣고, 테두리를 얹습니다 */
+function buildMineTex(){
+  const c = document.createElement("canvas");
+  c.width = TEX_W; c.height = TEX_H;
+  const x = c.getContext("2d");
+  const parts = mineParts(mine ? mine.shape : SHAPE_IDS[0]);
+  if (!parts.length) return c;
+
+  x.save();
+  x.beginPath();
+  for (const p of parts) appendPath(x, p.s, p.c);  // 여러 장을 한 덩어리로
+  x.clip();
+  if (minePaint) x.drawImage(minePaint, 0, 0);
+  x.restore();
+
+  // 테두리는 칠과 상관없이 언제나 보입니다
+  x.strokeStyle = (mine && mine.line) || "#10131c";
+  x.lineWidth = 3.5; x.lineJoin = "round"; x.lineCap = "round";
+  strokeShape(x, parts);
+  return c;
+}
+function mineChanged(){
+  delete wingTex[MINE];
+  delete glowTex[MINE];
+}
+
+/* 도감 목록에 「내 나비」를 끼워 넣습니다 */
+function mineSwatch(){
+  const tally = {};
+  let best = null, n = 0;
+  for (const st of (mine && mine.strokes) || []){
+    const c = st.fill || (st.e ? null : st.c);
+    if (!c) continue;
+    tally[c] = (tally[c] || 0) + (st.fill ? 6 : 1);
+    if (tally[c] > n){ n = tally[c]; best = c; }
+  }
+  return best || pickColor;
+}
+function registerMine(){
+  SPECIES[MINE] = {
+    id: MINE, name: "내 나비", swatch: mineSwatch(),
+    family: "내가 디자인한 날개",
+    fact: "모양을 고르고 색을 칠해 만든 나만의 나비입니다. 칠하지 않은 곳은 비쳐 보입니다.",
+    render: { shift: 0 }
+  };
+  if (SPECIES_KEYS.indexOf(MINE) < 0) SPECIES_KEYS.unshift(MINE);
+}
+
+/* ── 디자인 화면 ───────────────────────────────────────── */
+const dsEl = document.getElementById("design");
+const dsCanvas = document.getElementById("dsCanvas");
+const dsWheel = document.getElementById("dsWheel");
+const dsDot = document.getElementById("dsDot");
+let dsStep = 1, dsTarget = "fill", dsErasing = false;
+let pickColor = "#4d8dff", pickColor2 = "#bfe0ff", lineColor = "#10131c";
+let gradOn = false;
+let pickH = 215, pickS = 0.70, pickV = 1;
+
+const PRESETS = ["#ffffff","#111318","#ff4d4d","#ff9c2b","#ffd63d","#58d16b",
+                 "#3ea7ff","#8d6bff","#ff6fc2","#8a5a2b"];
+
+function hsv2hex(h, s, v){
+  const f = n => { const k = (n + h / 60) % 6;
+    const t = v - v * s * Math.max(0, Math.min(k, 4 - k, 1));
+    return Math.round(t * 255).toString(16).padStart(2, "0"); };
+  return "#" + f(5) + f(3) + f(1);
+}
+function drawWheel(){
+  const S = 118, r = S / 2, g = dsWheel.getContext("2d");
+  dsWheel.width = S; dsWheel.height = S;
+  const img = g.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++){
+    const dx = x - r + .5, dy = y - r + .5, dist = Math.hypot(dx, dy), i = (y * S + x) * 4;
+    if (dist > r){ d[i+3] = 0; continue; }
+    const h = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+    const sat = Math.min(1, dist / (r - 1));
+    const hex = hsv2hex(h, sat, pickV);
+    d[i]   = parseInt(hex.slice(1,3), 16);
+    d[i+1] = parseInt(hex.slice(3,5), 16);
+    d[i+2] = parseInt(hex.slice(5,7), 16);
+    d[i+3] = dist > r - 1.2 ? Math.round(255 * (r - dist) / 1.2) : 255;
+  }
+  g.putImageData(img, 0, 0);
+  const a = pickH * Math.PI / 180, rr = pickS * (r - 1);
+  dsDot.style.left = (r + Math.cos(a) * rr) + "px";
+  dsDot.style.top  = (r + Math.sin(a) * rr) + "px";
+  dsDot.style.background = dsTarget === "fill" ? pickColor
+                        : dsTarget === "fill2" ? pickColor2 : lineColor;
+}
+/* 색만 바꿉니다 — 지우개를 끄는 일은 「색을 직접 고른」 자리에서만 합니다.
+   (여기서 같이 꺼 버리면 지우개 버튼이 눌리자마자 스스로 꺼집니다) */
+function applyColor(){
+  const hex = hsv2hex(pickH, pickS, pickV);
+  if (dsTarget === "fill")       pickColor = hex;
+  else if (dsTarget === "fill2") pickColor2 = hex;
+  else { lineColor = hex; if (mine) mine.line = hex; mineChanged(); }
+  if (mine){ mine.c1 = pickColor; mine.c2 = pickColor2; mine.grad = gradOn; }
+  paintTabs(); drawWheel(); dsRender();
+}
+/* 고른 두 색을 탭에 그대로 보여 줍니다 */
+function paintTabs(){
+  const t1 = document.getElementById("dsTabFill"),
+        t2 = document.getElementById("dsTabFill2"),
+        tl = document.getElementById("dsTabLine");
+  const ink = hex => {
+    const n = parseInt(hex.slice(1), 16);
+    return (((n>>16)*299 + ((n>>8)&255)*587 + (n&255)*114) / 1000) > 140 ? "#05070f" : "#eef2ff";
+  };
+  t1.style.background = pickColor;  t1.style.color = ink(pickColor);
+  t2.style.background = pickColor2; t2.style.color = ink(pickColor2);
+  tl.style.background = lineColor;  tl.style.color = ink(lineColor);
+  t2.classList.toggle("off", !gradOn);
+  document.getElementById("dsGrad").setAttribute("aria-pressed", String(gradOn));
+  document.getElementById("dsHint").hidden = !gradOn;
+}
+function chooseColor(hex){ dsErasing = false; syncErase(); setColor(hex); }
+function setColor(hex){
+  // 미리 준비한 색을 고르면 색상환 손잡이도 그 자리로 옮깁니다
+  const n = parseInt(hex.slice(1), 16);
+  const R = (n >> 16) / 255, G = ((n >> 8) & 255) / 255, B = (n & 255) / 255;
+  const mx = Math.max(R,G,B), mn = Math.min(R,G,B), df = mx - mn;
+  pickV = mx || 0.02;
+  pickS = mx ? df / mx : 0;
+  pickH = df === 0 ? pickH
+        : mx === R ? ((G - B) / df % 6) * 60
+        : mx === G ? ((B - R) / df + 2) * 60
+        : ((R - G) / df + 4) * 60;
+  if (pickH < 0) pickH += 360;
+  document.getElementById("dsVal").value = String(Math.round(pickV * 100));
+  applyColor();
+}
+
+/* 디자인 캔버스 — 가운데를 기준으로 양쪽 날개가 거울처럼 함께 칠해집니다 */
+let dsScale = 1, dsCx = 0, dsCy = 0;
+function dsFit(){
+  const r = dsCanvas.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.max(2, Math.round(r.width * dpr)), h = Math.max(2, Math.round(r.height * dpr));
+  if (dsCanvas.width !== w || dsCanvas.height !== h){ dsCanvas.width = w; dsCanvas.height = h; }
+  const bx = shapeBox(mineParts(mine.shape));
+  dsScale = Math.min(w / (bx.half * 2 * 1.08), h / ((bx.y1 - bx.y0) * 1.08));
+  dsCx = w / 2;
+  dsCy = h / 2 - (bx.cy - ROOT.y) * dsScale;   // 모양 한가운데가 화면 한가운데로
+  return dpr;
+}
+function dsRender(){
+  if (dsEl.hidden || dsStep !== 2) return;
+  dsFit();
+  const g = dsCanvas.getContext("2d");
+  const W = dsCanvas.width, H = dsCanvas.height;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  // 체크무늬 — 「칠하지 않은 곳은 비칩니다」를 눈으로 보여 줍니다
+  const sq = Math.max(8, Math.round(10 * (window.devicePixelRatio || 1)));
+  for (let y = 0; y < H; y += sq) for (let x = 0; x < W; x += sq){
+    g.fillStyle = ((x / sq + y / sq) & 1) ? "rgba(255,255,255,.055)" : "rgba(255,255,255,.015)";
+    g.fillRect(x, y, sq, sq);
+  }
+
+  const parts = mineParts(mine.shape);
+  for (const dir of [1, -1]){
+    g.save();
+    g.translate(dsCx, dsCy);
+    g.scale(dir * dsScale, dsScale);
+    g.translate(-ROOT.x, -ROOT.y);
+    // 칠할 수 있는 자리를 옅게 깔아 둡니다 (디자인 화면에서만)
+    g.fillStyle = "rgba(255,255,255,.07)";
+    for (const p of parts){ pathFrom(g, p.s, p.c); g.fill(); }
+    g.save();
+    g.beginPath();
+    for (const p of parts) appendPath(g, p.s, p.c);
+    g.clip();
+    if (minePaint) g.drawImage(minePaint, 0, 0);
+    if (cur && !cur.e) drawStroke(g, cur);     // 지금 긋고 있는 획
+    g.restore();
+    // 고른 테두리 색이 어두워도 모양은 보이게 — 아래에 옅은 보조선을 깝니다
+    g.lineJoin = "round"; g.lineCap = "round";
+    g.strokeStyle = "rgba(190,215,255,.45)"; g.lineWidth = 7;
+    strokeShape(g, parts);
+    g.strokeStyle = lineColor; g.lineWidth = 3.5;
+    strokeShape(g, parts);
+    g.restore();
+  }
+  // 몸통 — 나비처럼 보이게
+  g.save();
+  g.translate(dsCx, dsCy);
+  g.scale(dsScale, dsScale);
+  g.fillStyle = lineColor;
+  g.beginPath(); g.ellipse(0, 70, 17, 150, 0, 0, 7); g.fill();
+  g.beginPath(); g.ellipse(0, -88, 24, 40, 0, 0, 7); g.fill();
+  g.strokeStyle = lineColor; g.lineWidth = 8; g.lineCap = "round";
+  for (const d of [1, -1]){
+    g.beginPath(); g.moveTo(0, -112);
+    g.quadraticCurveTo(d * 60, -200, d * 110, -215); g.stroke();
+  }
+  g.restore();
+}
+
+/* 슬라이더 → 붓 굵기.
+   곧게 비례시키면 가는 쪽이 슬라이더 앞 몇 칸에 몰려 머리카락 같은 선을 못 긋습니다.
+   아래로 휜 곡선을 써서 앞쪽 절반을 가는 선에, 뒤쪽을 넓은 면에 내줍니다.
+   2 (실선 한 올) ~ 302 (날개 절반) 사이입니다. */
+function brushW(){
+  const v = +document.getElementById("dsSize").value / 100;
+  return 2 + 300 * Math.pow(v, 2.6);
+}
+function syncTip(){
+  // 미리보기 점 — 실제 굵기를 화면 비율로 줄여 보여 줍니다 (너무 커지지 않게 상한)
+  const px = Math.max(3, Math.min(28, brushW() * 0.17));
+  document.getElementById("dsTip").style.setProperty("--tip", px.toFixed(1) + "px");
+}
+document.getElementById("dsSize").oninput = syncTip;
+
+/* 색 1 ↔ 색 2 — 포토샵 이후로 굳어진 맞바꾸기입니다 */
+function swapColors(){
+  const t = pickColor; pickColor = pickColor2; pickColor2 = t;
+  if (mine){ mine.c1 = pickColor; mine.c2 = pickColor2; }
+  syncTabs();            // 색상환 손잡이도 지금 탭의 색으로 옮깁니다
+  paintTabs(); dsRender(); saveMine();
+}
+
+/* 화면 좌표 → 날개 그림 좌표 (어느 쪽을 칠해도 같은 자리에 들어갑니다) */
+function dsPoint(ev){
+  const r = dsCanvas.getBoundingClientRect();
+  const dpr = dsCanvas.width / Math.max(1, r.width);
+  const sx = (ev.clientX - r.left) * dpr, sy = (ev.clientY - r.top) * dpr;
+  return [ROOT.x + Math.abs(sx - dsCx) / dsScale, ROOT.y + (sy - dsCy) / dsScale];
+}
+
+/* 그라데이션은 「어디서 시작해 어디서 끝났는지」를 알아야 정해집니다.
+   그래서 긋는 동안에는 화면에만 미리 그리고, 손을 뗄 때 한 번에 확정합니다.
+   (지우개는 방향과 무관하니 예전처럼 그때그때 지웁니다) */
+let cur = null, dsPending = false;
+function dsQueue(){
+  if (dsPending) return;
+  dsPending = true;
+  requestAnimationFrame(() => { dsPending = false; dsRender(); });
+}
+function dsDown(ev){
+  if (dsTarget === "line") return;
+  ev.preventDefault();
+  try { dsCanvas.setPointerCapture(ev.pointerId); } catch (e){}
+  const [x, y] = dsPoint(ev);
+  cur = { c: pickColor, w: brushW(),
+          e: dsErasing ? 1 : 0, p: [x, y] };
+  if (gradOn && !dsErasing) cur.c2 = pickColor2;
+  if (cur.e) drawStroke(paintCtx(), cur);
+  dsRender();
+}
+function dsMove(ev){
+  if (!cur) return;
+  ev.preventDefault();
+  const [x, y] = dsPoint(ev);
+  const n = cur.p.length;
+  if (Math.hypot(x - cur.p[n-2], y - cur.p[n-1]) < 3) return;
+  if (cur.e){      // 지우개 — 늘어난 만큼만 지웁니다
+    drawStroke(paintCtx(), { w: cur.w, e: 1, p: [cur.p[n-2], cur.p[n-1], x, y] });
+  }
+  cur.p.push(x, y);
+  dsQueue();
+}
+function dsUp(){
+  if (!cur) return;
+  if (!cur.e) drawStroke(paintCtx(), cur);     // 이제 방향이 정해졌습니다
+  mine.strokes.push(cur);
+  if (mine.strokes.length > 400) mine.strokes.splice(0, mine.strokes.length - 400);
+  cur = null;
+  mineChanged(); saveMine(); dsRender();
+}
+dsCanvas.addEventListener("pointerdown", dsDown);
+dsCanvas.addEventListener("pointermove", dsMove);
+dsCanvas.addEventListener("pointerup", dsUp);
+dsCanvas.addEventListener("pointercancel", dsUp);
+
+function syncErase(){
+  document.getElementById("dsErase").setAttribute("aria-pressed", String(dsErasing));
+}
+
+function buildShapeCards(){
+  const box = document.getElementById("dsShapes");
+  box.textContent = "";
+  for (const id of SHAPE_IDS){
+    if (!SPECIES[id]) continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(id === mine.shape));
+    const c = document.createElement("canvas");
+    c.width = 280; c.height = 210;
+    const g = c.getContext("2d");
+    const parts = mineParts(id);
+    const bx = shapeBox(parts);
+    const s = Math.min(c.width / (bx.half * 2 * 1.12), c.height / ((bx.y1 - bx.y0) * 1.12));
+    for (const dir of [1, -1]){
+      g.save();
+      g.translate(c.width / 2, c.height / 2 - (bx.cy - ROOT.y) * s);
+      g.scale(dir * s, s);
+      g.translate(-ROOT.x, -ROOT.y);
+      g.fillStyle = "rgba(143,192,255,.16)";
+      g.strokeStyle = "#cfe0ff"; g.lineWidth = 5; g.lineJoin = "round";
+      g.beginPath();
+      for (const p of parts) appendPath(g, p.s, p.c);
+      g.fill();
+      strokeShape(g, parts);
+      g.restore();
+    }
+    b.appendChild(c);
+    b.appendChild(document.createTextNode(SHAPE_NAMES[id] || SPECIES[id].name));
+    b.onclick = () => {
+      mine.shape = id;
+      [...box.children].forEach(el => el.setAttribute("aria-pressed", String(el === b)));
+      mineChanged(); saveMine();
+    };
+    box.appendChild(b);
+  }
+}
+
+function dsShow(step){
+  dsStep = step;
+  document.getElementById("dsShapes").hidden = step !== 1;
+  document.getElementById("dsPaint").hidden  = step !== 2;
+  document.getElementById("dsS1").className = step === 1 ? "on" : "";
+  document.getElementById("dsS2").className = step === 2 ? "on" : "";
+  document.getElementById("dsNext").textContent = step === 1 ? "다음" : "이 날개로 시작";
+  document.getElementById("dsBack").textContent = step === 1 ? "뒤로" : "모양 다시";
+  if (step === 2){
+    dsErasing = false; syncErase();        // 색칠 단계는 늘 붓으로 시작합니다
+    if (dsTarget === "fill2" && !gradOn) dsTarget = "fill";
+    paintTabs(); syncTip();
+    requestAnimationFrame(() => { drawWheel(); dsRender(); });
+  }
+}
+
+function openDesign(){
+  if (!mine) mine = loadMine() || { shape: SHAPE_IDS[0], line: "#10131c", strokes: [] };
+  lineColor = mine.line || "#10131c";
+  if (mine.c1) pickColor  = mine.c1;
+  if (mine.c2) pickColor2 = mine.c2;
+  gradOn = !!mine.grad;
+  repaintMine();
+  buildShapeCards();
+  dsEl.hidden = false;
+  watchBadge();
+  dsShow(1);
+}
+
+document.getElementById("dsBack").onclick = () => {
+  if (dsStep === 2){ dsShow(1); return; }
+  dsEl.hidden = true;
+  const intro = document.getElementById("intro");
+  if (intro) intro.hidden = false;        // 아직 시작 전이면 첫 화면으로
+};
+document.getElementById("dsNext").onclick = () => {
+  if (dsStep === 1){ dsShow(2); return; }
+  saveMine();
+  dsEl.hidden = true;
+  if (running){                      // 수정하고 돌아온 경우 — 바로 반영만 합니다
+    registerMine();
+    if (!speciesChip[MINE]) buildSpeciesUI();
+    else speciesChip[MINE].innerHTML =
+      `<i class="dot" style="background:${SPECIES[MINE].swatch}"></i>${SPECIES[MINE].name}`;
+    mineChanged();
+    selectSpecies(MINE, true);
+    setStatus("내 나비로 바꿨습니다", 1800);
+  } else {
+    startApp(MINE);
+  }
+};
+document.getElementById("dsTabFill").onclick  = () => { dsTarget = "fill";  syncTabs(); };
+document.getElementById("dsTabFill2").onclick = () => {
+  dsTarget = "fill2";
+  gradOn = true;                 // 둘째 색을 고르는 건 곧 그라데이션을 쓰겠다는 뜻입니다
+  syncTabs();
+};
+document.getElementById("dsTabLine").onclick  = () => { dsTarget = "line";  syncTabs(); };
+document.getElementById("dsSwap").onclick = swapColors;
+addEventListener("keydown", e => {
+  if (dsEl.hidden || dsStep !== 2) return;
+  if ((e.key === "x" || e.key === "X") && !e.metaKey && !e.ctrlKey && !e.altKey) swapColors();
+});
+document.getElementById("dsGrad").onclick = () => {
+  gradOn = !gradOn;
+  if (!gradOn && dsTarget === "fill2") dsTarget = "fill";
+  if (mine) mine.grad = gradOn;
+  syncTabs(); paintTabs(); saveMine();
+};
+function syncTabs(){
+  document.getElementById("dsTabFill").setAttribute("aria-pressed", String(dsTarget === "fill"));
+  document.getElementById("dsTabFill2").setAttribute("aria-pressed", String(dsTarget === "fill2"));
+  document.getElementById("dsTabLine").setAttribute("aria-pressed", String(dsTarget === "line"));
+  setColor(dsTarget === "fill" ? pickColor : dsTarget === "fill2" ? pickColor2 : lineColor);
+}
+document.getElementById("dsVal").oninput = e => { pickV = e.target.value / 100; applyColor(); };
+dsWheel.addEventListener("pointerdown", wheelPick);
+dsWheel.addEventListener("pointermove", e => { if (e.buttons) wheelPick(e); });
+function wheelPick(ev){
+  ev.preventDefault();
+  const r = dsWheel.getBoundingClientRect(), rad = r.width / 2;
+  const dx = ev.clientX - r.left - rad, dy = ev.clientY - r.top - rad;
+  pickH = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+  pickS = Math.min(1, Math.hypot(dx, dy) / (rad - 1));
+  if (dsTarget === "fill"){ dsErasing = false; syncErase(); }
+  applyColor();
+}
+document.getElementById("dsErase").onclick = () => {
+  dsErasing = !dsErasing;
+  if (dsTarget === "line"){ dsTarget = "fill"; syncTabs(); }
+  syncErase();
+};
+document.getElementById("dsFill").onclick = () => {
+  dsErasing = false; syncErase();
+  mine.strokes.push(gradOn ? { fill: pickColor, fill2: pickColor2 } : { fill: pickColor });
+  repaintMine(); mineChanged(); saveMine(); dsRender();
+};
+document.getElementById("dsUndo").onclick = () => {
+  mine.strokes.pop();
+  repaintMine(); mineChanged(); saveMine(); dsRender();
+};
+document.getElementById("dsClear").onclick = () => {
+  mine.strokes.length = 0;
+  repaintMine(); mineChanged(); saveMine(); dsRender();
+};
+(function(){
+  const box = document.getElementById("dsSwatches");
+  for (const hex of PRESETS){
+    const b = document.createElement("button");
+    b.type = "button"; b.style.background = hex; b.title = hex;
+    b.onclick = () => chooseColor(hex);
+    box.appendChild(b);
+  }
+})();
+addEventListener("resize", () => { if (!dsEl.hidden && dsStep === 2) dsRender(); });
+
+function nextSpecies(){
+  let i = 0;
+  try {
+    i = (parseInt(localStorage.getItem("wingSpecies"), 10) + 1) || 0;
+    localStorage.setItem("wingSpecies", String(i % SPECIES_KEYS.length));
+  } catch (e){
+    i = Math.floor(Math.random() * SPECIES_KEYS.length);   // 저장이 막힌 브라우저
+  }
+  return SPECIES_KEYS[i % SPECIES_KEYS.length];
+}
+
+const state = {
+  species: null,     // 도감을 불러온 뒤 정해집니다
+  perPerson: false,  // 여러 명일 때 사람마다 다른 종
+  size: 1.65,        // 어깨 너비 대비 날개 길이
+  speed: 0.70,       // 날갯짓 속도 (0 = 정지)
+  fit: "contain",   // contain = 카메라가 보는 전부 / cover = 화면 꽉 채움
+  facing: "user",
+  mirror: true
+};
+
+const video   = document.getElementById("cam");
+const out     = document.getElementById("out");
+const octx    = out.getContext("2d", { alpha: false });   // 불투명 = 합성이 가벼움
+const statusT = document.getElementById("statusText");
+const bar     = document.getElementById("bar");
+
+const speciesBar = document.getElementById("species");
+const infoBox    = document.getElementById("info");
+
+/* 도감을 불러온 뒤 호출 — 종 버튼을 만들고 첫 종을 고릅니다 */
+const speciesChip = {};
+function buildSpeciesUI(){
+  state.species = nextSpecies();
+  speciesBar.textContent = "";
+  for (const k in speciesChip) delete speciesChip[k];
+  for (const key of SPECIES_KEYS){
+    const p = SPECIES[key];
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(key === state.species));
+    b.innerHTML = `<i class="dot" style="background:${p.swatch}"></i>${p.name}`;
+    b.onclick = () => selectSpecies(key, true);
+    speciesChip[key] = b;
+    speciesBar.appendChild(b);
+  }
+  renderInfo();
+}
+function selectSpecies(key, scroll){
+  if (!SPECIES[key]) return;
+  state.species = key;
+  for (const k in speciesChip) speciesChip[k].setAttribute("aria-pressed", String(k === key));
+  if (!infoBox.hidden) renderInfo();
+  const b = speciesChip[key];
+  if (b && scroll) b.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+}
+
+/* 도감 카드 — 선택한 종의 생물 정보 */
+function renderInfo(){
+  const p = SPECIES[state.species];
+  if (!p) return;
+  const rows = [
+    ["학명", p.sci && `<i>${p.sci}</i>`],
+    ["분류", p.family],
+    ["날개편길이", p.wingspan],
+    ["분포", p.range],
+    ["출현", p.season],
+    ["먹이식물", p.host],
+    ["보전", p.status],
+    ["보이는 면", p.view],
+    ["색의 원리", p.color && (p.color + (p.colorNote ? ` — ${p.colorNote}` : ""))]
+  ].filter(r => r[1]);
+  infoBox.innerHTML =
+    `<h2>${p.name}</h2><dl>` +
+    rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("") +
+    `</dl>` + (p.fact ? `<p class="fact">${p.fact}</p>` : "");
+  if (state.species === MINE){
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = "다시 디자인하기";
+    b.style.cssText = "font:inherit;font-size:14px;font-weight:600;margin-top:14px;width:100%;" +
+      "color:#05070f;background:#8fc0ff;border:0;border-radius:999px;padding:12px;cursor:pointer";
+    b.onclick = () => { infoBox.hidden = true; openDesign(); };
+    infoBox.appendChild(b);
+  }
+}
+
+document.getElementById("size").oninput  = e => state.size  = e.target.value / 100;
+document.getElementById("speed").oninput = e => state.speed = e.target.value / 100;
+
+const perBtn = document.getElementById("per");
+perBtn.onclick = () => {
+  state.perPerson = !state.perPerson;
+  perBtn.setAttribute("aria-pressed", String(state.perPerson));
+  setStatus(state.perPerson ? "사람마다 다른 나비" : "모두 같은 나비", 1600);
+};
+
+const guideBtn = document.getElementById("guide");
+guideBtn.onclick = () => {
+  infoBox.hidden = !infoBox.hidden;
+  guideBtn.setAttribute("aria-pressed", String(!infoBox.hidden));
+  if (!infoBox.hidden) renderInfo();
+};
+
+/* ────────────────────────────────────────────────────────────
+   3. 카메라 + 포즈 추적
+   ──────────────────────────────────────────────────────────── */
+
+/* MediaPipe 는 emscripten 으로 만들어졌는데, 그 안에서 오류를 기록할 때 쓰는 dbg()
+   가 배포본에는 빠져 있습니다. 그래서 정작 문제가 생기면 진짜 원인 대신
+   "dbg is not a function" 만 튀어나옵니다. 여기서 한 줄 채워 둡니다. */
+try {
+  if (typeof globalThis.dbg !== "function"){
+    globalThis.dbg = function(){
+      try { console.warn("[mediapipe]", ...arguments); } catch (e){}
+    };
+  }
+} catch (e){}
+
+let landmarker = null, stream = null, lastVideoTime = -1, running = false;
+let mpMode = "?";
+let mpFileset = null;
+
+const mpOpts = (delegate) => ({
+  baseOptions: {
+    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+    delegate
+  },
+  runningMode: "VIDEO",
+  numPoses: 3,
+  outputSegmentationMasks: false,   // 기기마다 결과가 들쭉날쭉해 쓰지 않습니다
+  minPoseDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+async function initModel(){
+  mpFileset = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  try {
+    landmarker = await PoseLandmarker.createFromOptions(mpFileset, mpOpts("GPU"));
+    mpMode = "GPU";
+  } catch (e){
+    // 일부 기기에서 GPU 위임이 실패합니다 — CPU로 재시도
+    mpMode = "CPU(" + ((e && e.message) ? String(e.message).slice(0, 40) : "?") + ")";
+    landmarker = await PoseLandmarker.createFromOptions(mpFileset, mpOpts("CPU"));
+  }
+}
+
+/* GPU 위임은 "만들기"는 성공해도 구형 기기에서는 사람을 전혀 못 찾는 일이 있습니다.
+   몇 초 동안 한 명도 못 찾으면 조용히 CPU 방식으로 한 번 바꿔 봅니다. */
+let mpRetried = false, sawPose = false, runStart = 0;
+async function retryOnCPU(){
+  if (mpRetried || !mpFileset) return;
+  mpRetried = true;
+  setStatus("인식이 안 되어 다른 방식으로 다시 시도합니다…", 2800);
+  const old = landmarker;
+  landmarker = null;                      // 교체하는 동안 render 는 건너뜁니다
+  try { if (old) old.close(); } catch (e){}
+  try {
+    landmarker = await PoseLandmarker.createFromOptions(mpFileset, mpOpts("CPU"));
+    mpMode = "CPU(retry)";
+    lastVideoTime = -1;
+    runStart = performance.now();         // 새 방식에도 시간을 줍니다
+  } catch (e){
+    landmarker = old;                     // 되돌립니다
+    DBG.err = "CPU 재시도 실패: " + (e && e.message ? e.message : e);
+  }
+}
+
+async function openCamera(){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+
+  // 휴대폰·태블릿 카메라 센서는 4:3 입니다. 9:16 세로 영상을 달라고 하면 기기가
+  // 좌우를 잘라서 주기 때문에 화각이 좁아집니다. 그래서 4:3 그대로 넓게 받고,
+  // 화면에 맞추는 일은 sizeCanvas 가 합니다. 기기가 못 주면 한 단계씩 양보합니다.
+  const portrait = innerHeight >= innerWidth;
+  const W = portrait ? 1080 : 1440, H = portrait ? 1440 : 1080;
+  const tries = [
+    { facingMode: state.facing, width: { ideal: W }, height: { ideal: H },
+      aspectRatio: { ideal: portrait ? 3 / 4 : 4 / 3 } },
+    { facingMode: state.facing, width: { ideal: W }, height: { ideal: H } },
+    { facingMode: state.facing },
+    true
+  ];
+  let lastErr = null;
+  for (const v of tries){
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: v }); break; }
+    catch (e){
+      lastErr = e;
+      // 권한 문제는 조건을 바꿔도 마찬가지입니다 — 바로 알려 드립니다
+      if (e && (e.name === "NotAllowedError" || e.name === "SecurityError")) break;
+    }
+  }
+  if (!stream) throw lastErr || new Error("카메라를 열 수 없습니다");
+
+  video.srcObject = stream;
+  // iOS 는 이 약속을 거절하기도 하지만 실제로는 재생됩니다 — 여기서 멈추면 안 됩니다
+  try { await video.play(); } catch (e){ /* 무시 */ }
+
+  // 첫 프레임(크기)이 올 때까지 잠깐 기다립니다
+  if (!video.videoWidth){
+    await new Promise(res => {
+      let done = false;
+      const fin = () => { if (!done){ done = true; res(); } };
+      video.addEventListener("loadedmetadata", fin, { once: true });
+      video.addEventListener("playing", fin, { once: true });
+      setTimeout(fin, 3000);
+    });
+  }
+  state.mirror = (state.facing === "user");
+  sizeCanvas();
+}
+
+/* 화질 단계 — 기기가 버거워하면 한 칸씩 내려가고, 여유가 생기면 되돌아옵니다.
+   maxSide: 합성 캔버스 긴 변 상한 / occ: 가림막 작업 해상도 / lite: 분할 대신 골격 */
+const GEARS = [
+  { maxSide: 1150, occ: 448 },
+  { maxSide:  950, occ: 384 },
+  { maxSide:  780, occ: 320 }
+];
+let gear = 0;
+
+/* 영상 원본 크기 / 쓸 영역(CW·CH) / 캔버스 축소율(CS) */
+let VW = 1280, VH = 720, SX = 0, SY = 0, CW = 1280, CH = 720, CS = 1, fitKey = "";
+
+function sizeCanvas(){
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const key = `${vw}x${vh}@${innerWidth}x${innerHeight}@${state.fit}@${gear}`;
+  if (key === fitKey) return;
+  fitKey = key;
+  VW = vw; VH = vh;
+
+  // 먼저 화면 비율에 맞춰 영상에서 쓸 영역을 정하고 —
+  let cw = vw, ch = vh;
+  if (state.fit === "cover"){
+    const target = innerWidth / innerHeight;
+    if (vw / vh > target) cw = Math.round(vh * target);
+    else                  ch = Math.round(vw / target);
+  }
+  SX = Math.round((vw - cw) / 2);
+  SY = Math.round((vh - ch) / 2);
+  CW = cw; CH = ch;
+
+  // 그 영역을 화질 단계에 맞춰 줄여 캔버스로 씁니다 (보이는 그대로가 사진)
+  CS = Math.min(1, GEARS[gear].maxSide / Math.max(cw, ch));
+  const sw = Math.max(2, Math.round(cw * CS));
+  const sh = Math.max(2, Math.round(ch * CS));
+
+  if (out.width !== sw || out.height !== sh){
+    out.width = sw; out.height = sh;
+    person.width = sw; person.height = sh;
+    clean.width = sw; clean.height = sh;
+  }
+  const scale = Math.min(innerWidth / sw, innerHeight / sh);
+  out.style.width  = Math.round(sw * scale) + "px";
+  out.style.height = Math.round(sh * scale) + "px";
+}
+
+/* 정규화 랜드마크 → 캔버스 좌표 */
+const PX = nx => (nx * VW - SX) * CS;
+const PY = ny => (ny * VH - SY) * CS;
+addEventListener("resize", sizeCanvas);
+
+/* 오른쪽 아래 구석을 남이 차지하고 있는지(호스팅 배지 등) 확인합니다.
+   있으면 그만큼 아래를 비워서 버튼이 가려지지 않게 합니다. */
+function watchBadge(){
+  const el = document.elementFromPoint(innerWidth - 30, innerHeight - 26);
+  const mine = !el || el === document.body || el === document.documentElement ||
+               (el.closest && el.closest("#stage,#bar,#info,#status,#fit,#flash,#design,#intro,#inapp"));
+  let pad = 12;
+  if (!mine){
+    // 남의 것이 깔려 있습니다 — 실제 높이만큼만 비웁니다 (대개 호스팅 배지)
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    pad = (r && r.height) ? Math.max(24, Math.min(104, Math.round(innerHeight - r.top) + 16)) : 70;
+  }
+  document.documentElement.style.setProperty("--badge", pad + "px");
+}
+addEventListener("resize", () => setTimeout(watchBadge, 120));
+/* 배지 스크립트는 늦게 뜨기도 해서 처음 20초 동안 되풀이해 확인합니다 */
+watchBadge();
+(function(){
+  const t = setInterval(watchBadge, 1200);
+  setTimeout(() => clearInterval(t), 20000);
+})();
+
+const foldBtn = document.getElementById("fold");
+foldBtn.onclick = () => {
+  const folded = bar.classList.toggle("folded");
+  foldBtn.setAttribute("aria-expanded", String(!folded));
+  foldBtn.setAttribute("aria-label", folded ? "조절 도구 펴기" : "조절 도구 접기");
+};
+
+const fitBtn = document.getElementById("fit");
+fitBtn.onclick = () => {
+  state.fit = state.fit === "cover" ? "contain" : "cover";
+  fitBtn.setAttribute("aria-pressed", String(state.fit === "cover"));
+  fitKey = "";                 // 다음 프레임에 다시 계산
+  sizeCanvas();
+  setStatus(state.fit === "cover" ? "화면을 꽉 채웁니다 (가장자리가 잘립니다)"
+                                  : "카메라가 보는 전부를 담습니다", 2000);
+};
+
+document.getElementById("flip").onclick = async () => {
+  state.facing = state.facing === "user" ? "environment" : "user";
+  try { await openCamera(); } catch(e){ setStatus("카메라를 전환할 수 없습니다"); }
+};
+
+/* ────────────────────────────────────────────────────────────
+   4. 합성 — 영상 → 날개 → (분할된 인물)
+   ──────────────────────────────────────────────────────────── */
+
+const person = document.createElement("canvas");   // 최종 인물 레이어
+const pctx   = person.getContext("2d");
+const silC   = document.createElement("canvas");   // 가릴 영역(알파)
+const sctx   = silC.getContext("2d");
+const silB   = document.createElement("canvas");   // 가림막 흐리기용 (작음)
+const bctx   = silB.getContext("2d");
+const clean  = document.createElement("canvas");   // 날개를 그리기 직전의 화면 사본
+const nctx   = clean.getContext("2d");
+
+/* 아주 작은 「거울」 — 화면에 실제로 무엇이 찍혔는지 세어 보는 용도입니다.
+   48×64 밖에 안 되니 가끔 들여다봐도 부담이 없습니다. */
+const chk  = document.createElement("canvas");
+chk.width = 48; chk.height = 64;
+const kctx = chk.getContext("2d", { willReadFrequently: true });
+
+function snapOut(){
+  try {
+    kctx.globalCompositeOperation = "copy";
+    kctx.drawImage(out, 0, 0, chk.width, chk.height);
+    kctx.globalCompositeOperation = "source-over";
+    return kctx.getImageData(0, 0, chk.width, chk.height).data;
+  } catch (e){ return null; }
+}
+/* 인물 레이어가 「날개가 닿지 않은 배경」까지 바꿔 놓았는지 셉니다.
+   제대로 동작하면 인물 레이어는 화면 사본 그대로라 0 이어야 합니다.
+   0 이 아니면 그 기기에서는 배경에 얼룩이 생긴다는 뜻입니다. */
+function badCount(before, mid, after){
+  if (!before || !mid || !after) return -1;
+  // 부드러운 가장자리의 반투명 픽셀은 합성 과정의 반올림만으로도 조금 흔들립니다.
+  // 진짜 얼룩(눈에 보이는 색 차이)만 세도록 기준을 넉넉히 잡습니다.
+  const same = (x, y, i) => Math.abs(x[i]-y[i]) + Math.abs(x[i+1]-y[i+1]) + Math.abs(x[i+2]-y[i+2]) <= 48;
+  let n = 0;
+  for (let i = 0; i < before.length; i += 4)
+    if (same(before, mid, i) && !same(mid, after, i)) n++;
+  return n;
+}
+function diffCount(a, b){
+  if (!a || !b) return -1;
+  let n = 0;
+  for (let i = 0; i < a.length; i += 4)
+    if (Math.abs(a[i]-b[i]) + Math.abs(a[i+1]-b[i+1]) + Math.abs(a[i+2]-b[i+2]) > 24) n++;
+  return n;
+}
+/* 어떤 캔버스에 실제로 보이는 점이 남아 있는지 (0 이면 텅 빈 그림) */
+function inkOf(c){
+  try {
+    kctx.globalCompositeOperation = "copy";
+    kctx.drawImage(c, 0, 0, chk.width, chk.height);
+    kctx.globalCompositeOperation = "source-over";
+    const d = kctx.getImageData(0, 0, chk.width, chk.height).data;
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 16) n++;
+    return n;
+  } catch (e){ return -1; }
+}
+/* 머리 크기·위치 추정 ------------------------------------------------
+   코 하나만 쓰면 얼굴만 덮이고 정수리와 머리카락이 남습니다.
+   귀·눈·입·목·몸통까지 여러 단서에서 머리 반너비를 뽑아 가장 큰 값을
+   택하고(옆모습이라 일부가 붕괴해도 버팀), 중심은 귀 중점에서
+   목→머리 방향으로 올려 정수리 쪽을 덮습니다.                        */
+function headEllipse(lm, W, H){
+  const P = i => {
+    const p = lm[i];
+    return (p && (p.visibility ?? 1) > 0.25) ? [PX(p.x), PY(p.y)] : null;
+  };
+  const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+  const nose = P(0), Le = P(7), Re = P(8);
+  const Ls = P(11), Rs = P(12), Lh = P(23), Rh = P(24);
+  const face = [];
+  for (let i = 0; i <= 10; i++){ const p = P(i); if (p) face.push(p); }   // 코·눈·귀·입
+  if (!face.length) return null;
+
+  const sMid = (Ls && Rs) ? mid(Ls, Rs) : null;
+  const hMid = (Lh && Rh) ? mid(Lh, Rh) : null;
+
+  // 중심은 귀 — 귀는 머리 회전축에 거의 붙어 있어 어느 각도에서도 머리 한가운데입니다
+  let ctr = (Le && Re) ? mid(Le, Re) : (Le || Re || nose);
+
+  // 반지름은 그 중심에서 "가장 먼 얼굴 점"까지.
+  // 정면이면 귀까지(=머리 너비), 옆모습이면 코까지(=머리 두께)가 잡혀서
+  // 고개를 돌려도 크기가 무너지지 않고, 코 쪽 뺨도 원 안에 들어옵니다.
+  let r = 0;
+  for (const p of face) r = Math.max(r, d(ctr, p));
+
+  // 랜드마크가 몇 개 없을 때를 위한 하한 (회전과 무관한 단서들)
+  if (sMid)         r = Math.max(r, d(ctr, sMid) * 0.55);   // 머리중심 ~ 어깨
+  if (sMid && hMid) r = Math.max(r, d(sMid, hMid) * 0.28);  // 몸통 길이
+  if (Ls && Rs)     r = Math.max(r, d(Ls, Rs) * 0.22);
+  if (r < 8) return null;
+
+  // 정수리·머리카락 쪽으로 살짝 올림 (귀는 머리 높이의 중간쯤)
+  let dx = 0, dy = -1;
+  if (sMid){                                             // 고개를 기울여도 따라가도록
+    const vx = ctr[0] - sMid[0], vy = ctr[1] - sMid[1];
+    const n = Math.hypot(vx, vy) || 1;
+    dx = vx / n; dy = vy / n;
+  }
+  const up = r * 0.18;
+  return { x: ctr[0] + dx * up, y: ctr[1] + dy * up, rx: r * 1.22, ry: r * 1.55 };
+}
+
+/* 머리 가림막 — 가장자리가 번지는 타원.
+   딱딱한 원이면 날개가 동그랗게 잘려 보이므로, 바깥쪽을 서서히 투명하게
+   해서 머리카락 경계가 어디든 자연스럽게 묻히게 합니다.               */
+function paintHeadCap(ctx, e, pad, mode){
+  if (!e) return;
+  ctx.save();
+  ctx.globalCompositeOperation = mode || "lighter";      // 기본은 기존 영역과 합집합
+  ctx.translate(e.x, e.y);
+  ctx.scale(e.rx * pad, e.ry * pad);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  g.addColorStop(0.00, "rgba(255,255,255,1)");
+  g.addColorStop(0.68, "rgba(255,255,255,1)");
+  g.addColorStop(1.00, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+/* 골격으로 몸 실루엣 그리기 (분할이 없을 때의 대안) ----------------
+   머리·목·몸통·팔·다리를 굵은 선과 면으로 채워 "가릴 영역"을 만듭니다. */
+function paintSkeletonBody(ctx, lm, W, H){
+  const P = i => {
+    const p = lm[i];
+    return (p && (p.visibility ?? 1) > 0.3) ? [PX(p.x), PY(p.y)] : null;
+  };
+  const Ls = P(11), Rs = P(12);
+  if (!Ls || !Rs) return false;
+  const sw = Math.hypot(Ls[0] - Rs[0], Ls[1] - Rs[1]);
+  const cx = (Ls[0] + Rs[0]) / 2, cy = (Ls[1] + Rs[1]) / 2;
+  const unit = Math.max(sw, W * 0.06);             // 옆모습이면 어깨폭이 좁아지므로 하한
+
+  const Lh = P(23) || [Ls[0], cy + unit * 1.6];
+  const Rh = P(24) || [Rs[0], cy + unit * 1.6];
+
+  ctx.save();
+  ctx.fillStyle = "#fff"; ctx.strokeStyle = "#fff";
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+
+  // 몸통 — 어깨·엉덩이 사각형을 선 두께만큼 부풀림
+  ctx.lineWidth = unit * 0.34;
+  ctx.beginPath();
+  ctx.moveTo(Ls[0], Ls[1]); ctx.lineTo(Rs[0], Rs[1]);
+  ctx.lineTo(Rh[0], Rh[1]); ctx.lineTo(Lh[0], Lh[1]);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  // 목 — 머리에서 어깨 중앙까지 (머리 자체는 아래에서 따로)
+  const head = headEllipse(lm, W, H);
+  if (head){
+    ctx.lineWidth = Math.max(unit * 0.38, head.rx * 0.95);
+    ctx.beginPath(); ctx.moveTo(head.x, head.y); ctx.lineTo(cx, cy); ctx.stroke();
+  }
+
+  // 팔·다리
+  for (const [chain, thick] of [[[11,13,15], 0.24], [[12,14,16], 0.24],
+                                [[23,25,27], 0.28], [[24,26,28], 0.28]]){
+    const pts = chain.map(P).filter(Boolean);
+    if (pts.length < 2) continue;
+    ctx.lineWidth = unit * thick;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+  }
+  ctx.restore();
+  paintHeadCap(ctx, head, 1.06);
+  return true;
+}
+
+
+/* 가릴 영역을 만들고, 그 모양대로 영상을 오려 인물 레이어를 돌려줍니다 */
+/* 가릴 영역(골격 실루엣)을 만들고, 그 모양대로 영상을 오려 돌려줍니다.
+   인물 분할(AI 마스크)은 기기마다 결과가 달라 쓰지 않습니다 — 관절 위치로 그린
+   실루엣은 어디서나 똑같이 나오고 훨씬 가볍습니다. */
+/* 여러 사람의 실루엣을 한 장의 마스크로 만듭니다 (작은 캔버스).
+   돌려주는 것은 "가릴 모양"일 뿐, 영상은 건드리지 않습니다. */
+function buildMask(lms){
+  const W = out.width, H = out.height;
+  const k  = Math.min(1, GEARS[gear].occ / Math.max(W, H));
+  const sw = Math.max(2, Math.round(W * k)), sh = Math.max(2, Math.round(H * k));
+  if (silC.width !== sw || silC.height !== sh){ silC.width = sw; silC.height = sh; }
+  sctx.setTransform(k, 0, 0, k, 0, 0);            // 좌표는 전체 해상도 그대로 씁니다
+  sctx.globalCompositeOperation = "source-over";
+  sctx.filter = "none";
+  sctx.clearRect(0, 0, W, H);
+
+  let any = false;
+  for (const lm of lms) if (paintSkeletonBody(sctx, lm, W, H)) any = true;
+  if (!any) return null;
+
+  // 가장자리 부드럽게 ─ blur 에 기대지 않습니다.
+  // 구형 사파리는 blur 를 지원한다고 해 놓고 조용히 건너뛰거나 화면 전체로 퍼뜨립니다.
+  // 대신 작게 줄였다가 다시 키웁니다. 두 번의 보간이 경계를 자연스러운 그라데이션으로
+  // 바꿔 주고, 어느 기기에서나 똑같이 동작하며 blur 보다 쌉니다.
+  const fw = Math.max(16, Math.round(sw / 3)), fh = Math.max(16, Math.round(sh / 3));
+  if (silB.width !== fw || silB.height !== fh){ silB.width = fw; silB.height = fh; }
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.globalCompositeOperation = "copy";
+  bctx.imageSmoothingEnabled = true;
+  bctx.imageSmoothingQuality = "medium";
+  bctx.drawImage(silC, 0, 0, sw, sh, 0, 0, fw, fh);
+  return { c: silB, w: fw, h: fh };
+}
+
+/* 한 사람을 오려 낸 레이어. 영상을 다시 샘플링하지 않고, 날개를 그리기 직전에
+   떠 둔 화면 사본(clean)에서 오려 냅니다. 화면에 이미 찍혀 있던 바로 그 픽셀이라
+   기기가 무엇이든 배경과 100% 같아서, 어깨 둘레가 뿌옇게 뜰 수가 없습니다. */
+function buildPersonLayer(lm){
+  const W = person.width, H = person.height;
+  const m = buildMask([lm]);
+  if (!m) return null;
+
+  pctx.setTransform(1, 0, 0, 1, 0, 0);
+  pctx.globalAlpha = 1;
+  try { pctx.filter = "none"; } catch (e){}
+  pctx.globalCompositeOperation = "copy";
+  pctx.drawImage(clean, 0, 0);
+
+  // 마스크는 원본 좌표계, 화면 사본은 이미 좌우가 뒤집혀 있으니 마스크도 뒤집습니다
+  if (state.mirror){ pctx.translate(W, 0); pctx.scale(-1, 1); }
+  pctx.globalCompositeOperation = "destination-in";     // 그 모양 안쪽만 남김
+  pctx.imageSmoothingEnabled = true;
+  pctx.imageSmoothingQuality = "medium";
+  pctx.drawImage(m.c, 0, 0, m.w, m.h, 0, 0, W, H);
+
+  pctx.setTransform(1, 0, 0, 1, 0, 0);
+  pctx.globalCompositeOperation = "source-over";
+  return person;
+}
+
+/* 몸통 방향 추정 ------------------------------------------------------
+   어깨선을 수평면 위의 벡터 u = (ux, uz) 로 봅니다.
+     ux = 화면 가로 성분,  uz = 깊이 성분(+ 가 카메라에서 먼 쪽)
+   정면이면 u=(1,0), 완전히 옆을 보면 u=(0,±1).
+   등 방향 b 는 u 를 수평면에서 90° 돌린 것 = (-uz, ux) 이고,
+   그 화면 가로 성분은 -uz 입니다. 날개는 이 b 쪽으로 젖혀집니다.      */
+
+/* 사람마다 따로 스무딩해야 하므로, 어깨 중심 위치로 프레임 간에 짝을 맞춥니다 */
+const DEBUG = /[?&]debug=1/.test(location.search);
+const dbgEl = document.getElementById("dbg");
+const DBG = { poses: 0, people: 0, scale: 0, wings: 0, alpha: 0, err: "", occ: "on",
+              ux: 0, uz: 0, hx: 0, zw: 0, drew: 0, raf: 0, det: 0,
+              texpx: -1, wpx: -1, fpx: -1, cov: -1, bad: -1 };
+function verdict(){
+  if (DBG.err)         return "그리기 오류 — 아래 ERR 줄 참고";
+  if (!DBG.raf)        return "화면 그리기가 멈춰 있습니다";
+  if (!DBG.det)        return "영상이 넘어오지 않습니다 (카메라 정지)";
+  if (!DBG.poses)      return "사람을 찾지 못했습니다 (몸이 더 보이게)";
+  if (!DBG.people)     return "어깨가 너무 작게 잡힙니다";
+  if (!DBG.wings)      return "어깨 위치를 못 읽었습니다";
+  if (!DBG.drew)       return "날개를 그리지 못했습니다";
+  if (DBG.texpx === 0) return "날개 그림이 텅 비었습니다 (기기가 그림을 지움)";
+  if (DBG.wpx === 0)   return "날개가 화면 밖에 그려집니다";
+  if (DBG.wpx > 0 && DBG.fpx === 0) return "사람 레이어가 날개를 덮고 있습니다";
+  if (DBG.alpha < 0.03) return "각도 계산이 0 — 예비 날개로 그리는 중";
+  return "정상";
+}
+let dbgTick = 0;
+function showDebug(){
+  if (!DEBUG || !dbgEl) return;
+  if (++dbgTick % 6) return;                  // 너무 자주 고치면 읽기 어려워요
+  dbgEl.hidden = false;
+  dbgEl.textContent =
+    `video ${video.videoWidth}x${video.videoHeight}  canvas ${out.width}x${out.height}\n` +
+    `gear ${gear}  cs ${CS.toFixed(2)}  filter ${CAN_FILTER ? "Y" : "N"}/blur ${blurOK ? "Y" : "N"}  cores ${navigator.hardwareConcurrency || "?"}\n` +
+    `poses ${DBG.poses}  people ${DBG.people}  scale ${Math.round(DBG.scale)}  wings ${DBG.wings}  alpha ${DBG.alpha.toFixed(2)}\n` +
+    `occ ${DBG.occ}  species ${state.species}  tex ${Object.keys(wingTex).length}\n` +
+    `mp ${mpMode}  drew ${DBG.drew}  raf ${DBG.raf}  det ${DBG.det}\n` +
+    `ux ${DBG.ux.toFixed(2)} uz ${DBG.uz.toFixed(2)} hx ${DBG.hx.toFixed(2)} zw ${DBG.zw.toFixed(2)}\n` +
+    `texpx ${DBG.texpx}  wpx ${DBG.wpx}  fpx ${DBG.fpx}  cov ${DBG.cov < 0 ? "?" : Math.round(DBG.cov*100) + "%"}  bad ${DBG.bad}\n` +
+    `▶ ${verdict()}\n` +
+    (DBG.err ? `ERR ${DBG.err}` : "err none");
+}
+
+let occOK = true;          // 가림(몸 뒤 합성)을 쓸 수 있는 기기인지
+let badRun = 0;            // 인물 레이어가 배경을 건드린 횟수(연속)
+const blurOK = BLUR_REAL;  // 흐리기(글로우)를 믿을 수 있는 기기인지
+let tracks = [], slotCursor = 0;
+function trackFor(cx, cy, ref){
+  let best = null, bestD = ref * 1.4;
+  for (const tr of tracks){
+    if (tr.used) continue;
+    const dd = Math.hypot(tr.cx - cx, tr.cy - cy);
+    if (dd < bestD){ bestD = dd; best = tr; }
+  }
+  if (!best){ best = { ux: 1, uz: 0, miss: 0, slot: slotCursor++ }; tracks.push(best); }
+  best.cx = cx; best.cy = cy; best.used = true; best.miss = 0;
+  // "각자 다른 나비" — 선택한 종에서 한 칸씩 밀어 사람마다 배정합니다
+  best.species = state.perPerson
+    ? SPECIES_KEYS[(Math.max(0, SPECIES_KEYS.indexOf(state.species)) + best.slot) % SPECIES_KEYS.length]
+    : null;
+  return best;
+}
+function sweepTracks(){
+  tracks = tracks.filter(tr => tr.used || ++tr.miss < 45);
+  for (const tr of tracks) tr.used = false;
+}
+
+function bodyAxis(lm, world, tr){
+  const src = (world && world[11] && world[12]) ? world : lm;
+  const L = src[11], R = src[12];
+  let ux = (L.x - R.x), uz = (L.z || 0) - (R.z || 0);
+  if (!isFinite(ux) || !isFinite(uz)){ ux = 1; uz = 0; }     // 값이 없으면 정면으로
+  const n = Math.hypot(ux, uz) || 1;
+  ux /= n; uz /= n;
+  if (!isFinite(tr.ux) || !isFinite(tr.uz)){ tr.ux = ux; tr.uz = uz; }
+  tr.ux += (ux - tr.ux) * 0.22;
+  tr.uz += (uz - tr.uz) * 0.22;
+  const m = Math.hypot(tr.ux, tr.uz) || 1;
+  const rx = tr.ux / m, rz = tr.uz / m;
+  return isFinite(rx) && isFinite(rz) ? { ux: rx, uz: rz } : { ux: 1, uz: 0 };
+}
+
+/* 어깨 너비(옆모습 보정 포함) — 원근 정렬과 트래킹에 씁니다 */
+function bodyScale(lm){
+  const Ls = lm[11], Rs = lm[12], Lh = lm[23], Rh = lm[24];
+  if (!Ls || !Rs) return 0;
+  if ((Ls.visibility ?? 1) < 0.5 && (Rs.visibility ?? 1) < 0.5) return 0;
+  const sw = Math.hypot(PX(Ls.x) - PX(Rs.x), PY(Ls.y) - PY(Rs.y));
+  const cy = (PY(Ls.y) + PY(Rs.y)) / 2;
+  const torso = (Lh && Rh) ? Math.abs((PY(Lh.y) + PY(Rh.y)) / 2 - cy) : 0;
+  return Math.max(sw, torso * 0.62);
+}
+
+/* 날개 두 장을 만들어 깊이 순으로 돌려줍니다 (z > 0 = 몸 뒤) --------- */
+function buildWings(lm, t, world, tr){
+  const W = out.width, H = out.height;
+  const Ls = lm[11], Rs = lm[12], Lh = lm[23], Rh = lm[24];
+  if (!Ls || !Rs) return null;
+  if ((Ls.visibility ?? 1) < 0.5 && (Rs.visibility ?? 1) < 0.5) return null;
+
+  const lx = PX(Ls.x), ly = PY(Ls.y);
+  const rx = PX(Rs.x), ry = PY(Rs.y);
+  const cx = (lx + rx) / 2, cy = (ly + ry) / 2;
+  const shoulderPx = Math.hypot(lx - rx, ly - ry);
+
+  const hipY  = (Lh && Rh) ? (PY(Lh.y) + PY(Rh.y)) / 2 : cy + shoulderPx;
+  const torso = Math.abs(hipY - cy);
+  // 옆으로 돌면 어깨 폭이 줄어드니, 몸통 길이로 실제 폭을 되살립니다
+  const ref = Math.max(shoulderPx, torso * 0.62, 24);
+  if (ref < 24) return null;
+
+  const { ux, uz } = bodyAxis(lm, world, tr || trackFor(cx, cy, ref));
+  const bodyAngle  = Math.atan2(ly - ry, lx - rx);   // 화면상 어깨선 기울기
+  const span = ref * state.size * 0.85;
+  // 사람마다 다른 종을 쓸 수 있습니다 (트랙에 배정된 종 → 없으면 현재 선택)
+  const id   = (tr && tr.species) || state.species;
+  const tex  = texFor(id);
+  const glow = glowFor(id);
+  const pal  = SPECIES[id].render;
+
+  // 날갯짓 = 날개가 등 뒤로 젖혀지는 각도(sweep)의 변화
+  const phase = t * state.speed * 4.2;
+  const sweep = 0.50 + 0.62 * (0.5 - 0.5 * Math.cos(phase));   // 29° ~ 64°
+  const cs = Math.cos(sweep), ss = Math.sin(sweep);
+  const lift = 0.16 * Math.sin(phase);
+
+  // 몸이 돌아간 만큼 날개 뿌리도 등 쪽으로 밀어줍니다
+  const backPush = -uz * ref * 0.28;
+
+  const wings = [];
+  for (const dir of [1, -1]){
+    // 날개 벡터 = dir·cos(sweep)·u + sin(sweep)·b
+    const hx = dir * cs * ux - ss * uz;   // 화면 가로 성분 (부호가 바뀌면 반대편으로 넘어감)
+    const zw = dir * cs * uz + ss * ux;   // 깊이: + 면 몸 뒤, − 면 몸 앞
+    const sgn = hx >= 0 ? 1 : -1;
+    const mag = Math.max(Math.abs(hx), 0.22);  // 너무 납작해지지 않게
+
+    const sx = dir === 1 ? lx : rx;
+    const sy = dir === 1 ? ly : ry;
+    const ax = sx + (cx - sx) * 0.30 + backPush * Math.cos(bodyAngle);
+    const ay = sy + (cy - sy) * 0.30 + backPush * Math.sin(bodyAngle) - torso * 0.06;
+
+    if (dir === 1){ DBG.ux = ux; DBG.uz = uz; DBG.hx = hx; DBG.zw = zw; }
+    const k = (span * (1 - 0.12 * zw)) / SPAN;   // 가까운 날개가 조금 더 큼
+    const hue    = (1 - mag) * (pal.shift ?? 20);
+    const bright = 0.72 + 0.46 * mag;
+
+    // 거의 옆을 향하면(hx→0) 얇은 조각만 남으므로 서서히 사라지게 합니다
+    const fade = Math.max(0, Math.min(1, (Math.abs(hx) - 0.07) / 0.20));
+    // 깊이(zw)는 가까운 쪽 날개를 살짝 밝게 하는 정도로만 씁니다.
+    // 예전에는 여기서 0까지 내려갈 수 있었는데, 그러면 몸이 어떤 각도로 서 있을 때
+    // 양쪽 날개가 동시에 사라져 버립니다. 얼굴을 가리지 않게 하는 일은 위의
+    // fade(가로 성분)가 이미 맡고 있으니, 깊이로는 절대 지우지 않습니다.
+    const back  = 0.62 + 0.38 * Math.max(0, Math.min(1, (zw + 0.06) / 0.26));
+    const alpha = 0.97 * fade * back;
+
+    if (![ax, ay, k, mag, bodyAngle, alpha].every(isFinite)) continue;
+
+    wings.push({ z: zw, alpha, draw(ctx, force){
+      // force: 두 날개가 다 앞으로 넘어갔을 때 그나마 뒤쪽인 하나는 살려 둡니다
+      const a = force ? Math.max(alpha, 0.85) : alpha;      // 예비로 그릴 땐 확실히 보이게
+      const gl = force ? 0.6 : back;
+      if (a < 0.03) return;
+
+      ctx.save();
+      ctx.translate(ax, ay);
+      ctx.rotate(bodyAngle + sgn * (-0.36 + lift));
+      ctx.scale(sgn * k * mag, k);
+
+      if (glow){                                     // 미리 흐려 둔 글로우
+        ctx.save();
+        ctx.globalAlpha = 0.30 * mag * fade * gl;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.drawImage(glow, -ROOT.x, -ROOT.y, TEX_W, TEX_H);
+        ctx.restore();
+      }
+
+      try { ctx.filter = `hue-rotate(${hue}deg) brightness(${bright}) saturate(${1 + 0.35*(1-mag)})`; } catch(e){}
+      ctx.globalAlpha = a;
+      ctx.drawImage(tex, -ROOT.x, -ROOT.y, TEX_W, TEX_H);
+      // 구형 사파리는 restore() 로 filter 를 되돌려 주지 않습니다. 그대로 두면 뒤이어
+      // 그리는 인물 레이어까지 밝기·색 보정을 받아 어깨 위에 밝은 판처럼 보입니다.
+      try { ctx.filter = "none"; } catch(e){}
+      ctx.restore();
+    }});
+  }
+  wings.sort((a, b) => b.z - a.z);   // 먼 것부터
+  return wings;
+}
+
+/* ────────────────────────────────────────────────────────────
+   5. 렌더 루프
+   ──────────────────────────────────────────────────────────── */
+
+let statusTimer = null;
+function setStatus(msg, hideAfter){
+  statusT.textContent = msg;
+  statusT.style.opacity = "1";
+  clearTimeout(statusTimer);
+  if (hideAfter) statusTimer = setTimeout(() => statusT.style.opacity = "0", hideAfter);
+}
+
+let missFrames = 0;
+let reportedCount = 0;
+
+/* 「각자」는 여러 명일 때만 쓸모가 있습니다. 인식이 한 프레임씩 흔들려도
+   버튼이 깜빡이지 않도록, 혼자가 된 뒤 3초가 지나야 숨깁니다. */
+let lastMulti = 0;
+function watchCrowd(n, now){
+  if (n >= 2){
+    lastMulti = now;
+    if (perBtn.hidden){
+      perBtn.hidden = false;
+      setStatus("여러 명이네요 — 「각자」로 사람마다 다른 나비를 줄 수 있어요", 2600);
+    }
+  } else if (!perBtn.hidden && lastMulti && now - lastMulti > 3000){
+    perBtn.hidden = true;
+  }
+}
+
+/* 느린 기기 자동 감지 — 프레임 시간이 길게 이어지면 분할을 끕니다.
+   "끊긴다"는 불평이 나오기 전에 스스로 가벼워지는 쪽을 택했습니다.      */
+let frameEMA = 0, slowRun = 0, fastRun = 0, lastFrame = 0, toldSlow = false;
+
+function setGear(g){
+  gear = Math.max(0, Math.min(GEARS.length - 1, g));
+  fitKey = "";                 // 캔버스 크기를 다시 계산
+  sizeCanvas();
+  slowRun = fastRun = 0;
+  if (gear > 0 && !toldSlow){
+    toldSlow = true;
+    setStatus("기기에 맞춰 화질을 조금 낮췄습니다", 2400);
+  }
+}
+
+function watchSpeed(now){
+  if (lastFrame){
+    const dt = now - lastFrame;
+    frameEMA = frameEMA ? frameEMA * 0.9 + dt * 0.1 : dt;
+    if (frameEMA > 55 && gear < GEARS.length - 1){        // 18 fps 아래가 이어지면
+      fastRun = 0;
+      if (++slowRun > 45) setGear(gear + 1);
+    } else if (frameEMA < 34 && gear > 0){                // 여유가 생기면 되돌립니다
+      slowRun = 0;
+      if (++fastRun > 300) setGear(gear - 1);
+    } else { slowRun = 0; fastRun = 0; }
+  }
+  lastFrame = now;
+}
+
+function render(){
+  if (!running) return;
+  requestAnimationFrame(render);
+  DBG.raf++;
+  if (video.readyState < 2 || !landmarker) return;
+  sizeCanvas();
+
+  const now = performance.now();
+  watchSpeed(now);
+  // 몇 초를 줬는데도 한 명도 못 찾으면 인식 방식을 한 번 바꿔 봅니다
+  if (!sawPose && !mpRetried && runStart && now - runStart > 5200){
+    retryOnCPU();          // 이 줄 안에서 landmarker 를 잠시 비웁니다 — 이번 프레임은 쉽니다
+    return;
+  }
+  if (video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
+  if (!landmarker) return;
+
+  landmarker.detectForVideo(video, now, (result) => {
+   try {
+    DBG.det++;
+    const t = now / 1000;
+    octx.save();
+    if (state.mirror){ octx.translate(out.width, 0); octx.scale(-1, 1); }
+
+    octx.drawImage(video, SX, SY, CW, CH, 0, 0, out.width, out.height);
+
+    // 사람을 얹을 때 쓸 「영상만 있는 깨끗한 화면」을 여기서 한 장 떠 둡니다.
+    // 예전에는 인물 레이어를 영상에서 다시 오려 왔는데, 기기에 따라 그 두 번의
+    // 그리기가 미묘하게 달라져(프레임·색 관리 차이) 어깨 둘레가 뿌옇게 떴습니다.
+    // 이미 화면에 찍힌 픽셀을 그대로 쓰면 다를 수가 없습니다.
+    let cleanOK = false;
+    if (occOK){
+      try {
+        nctx.setTransform(1, 0, 0, 1, 0, 0);
+        nctx.globalCompositeOperation = "copy";
+        nctx.globalAlpha = 1;
+        try { nctx.filter = "none"; } catch (e){}
+        nctx.drawImage(out, 0, 0);
+        nctx.globalCompositeOperation = "source-over";
+        cleanOK = true;
+      } catch (e){ cleanOK = false; }
+    }
+
+    const poses  = result.landmarks || [];
+    const worlds = result.worldLandmarks || [];
+    DBG.poses = poses.length;
+    if (poses.length) sawPose = true;
+    // 작게 보이는 사람 = 멀리 있는 사람. 먼 사람부터 그려 앞사람이 위로 오게 합니다.
+    const people = poses
+      .map((lm, i) => ({ lm, world: worlds[i], scale: bodyScale(lm) }))
+      .filter(p => p.scale >= 24)
+      .sort((a, b) => a.scale - b.scale);
+    DBG.people = people.length;
+    DBG.scale  = poses.length ? bodyScale(poses[0]) : 0;
+
+    let count = 0;
+    for (const p of people){
+      const cx = (PX(p.lm[11].x) + PX(p.lm[12].x)) / 2;
+      const cy = (PY(p.lm[11].y) + PY(p.lm[12].y)) / 2;
+      const wings = buildWings(p.lm, t, p.world, trackFor(cx, cy, p.scale));
+      DBG.wings = wings ? wings.length : 0;
+      DBG.alpha = wings ? Math.max(...wings.map(w => w.alpha)) : 0;
+      if (!wings) continue;
+      count++;
+      // 날개가 화면에 실제로 찍히는지 가끔 확인합니다 (아주 작은 거울로 비교)
+      const probe = (DBG.det % 30 === 0) ? snapOut() : null;
+      // 1) 날개를 먼저 그립니다. 뒤 작업이 어떤 이유로 실패해도 날개는 남습니다.
+      if (wings.some(w => w.alpha >= 0.03)){
+        DBG.drew = wings.filter(w => w.alpha >= 0.03).length;
+        for (const w of wings) w.draw(octx);
+      } else if (wings.length) {
+        DBG.drew = 1;
+        // 두 날개가 다 앞으로 넘어갔거나 계산이 이상한 경우 — 그래도 한 장은 보입니다
+        let best = wings[0];
+        for (const w of wings) if (w.z > best.z) best = w;
+        best.draw(octx, true);
+      } else {
+        DBG.drew = 0;
+      }
+      const mid = probe ? snapOut() : null;
+      if (probe) DBG.wpx = diffCount(probe, mid);
+
+      // 2) 그 사람을 얹어 "몸 뒤"로 보이게 합니다.
+      //    사람마다 바로 얹어야 앞사람 날개가 뒷사람 몸 위로 옵니다.
+      if (occOK && cleanOK){
+        try {
+          const cutout = buildPersonLayer(p.lm);
+          if (cutout){
+            octx.save();
+            octx.setTransform(1, 0, 0, 1, 0, 0);   // person 은 이미 화면 좌표계입니다
+            octx.globalAlpha = 1;
+            octx.globalCompositeOperation = "source-over";
+            try { octx.filter = "none"; } catch (e){}
+            octx.drawImage(cutout, 0, 0);
+            octx.restore();
+          }
+          // 인물 레이어가 화면을 거의 다 덮으면 날개가 통째로 가려집니다 — 그러면 접습니다
+          if (cutout && DBG.det % 30 === 5){
+            const n = inkOf(cutout);
+            DBG.cov = n < 0 ? -1 : n / (chk.width * chk.height);
+            if (DBG.cov > 0.85){
+              occOK = false;
+              DBG.occ = "off: 가림막이 화면을 다 덮음";
+              setStatus("이 기기에서는 날개를 몸 위에 그립니다", 2600);
+            }
+          }
+        } catch (e){
+          occOK = false;                    // 이 기기에서는 가림을 접습니다
+          DBG.occ = "off: " + (e && e.message ? e.message : e);
+          setStatus("이 기기에서는 날개를 몸 위에 그립니다", 2600);
+        }
+      }
+      if (probe){
+        const post = snapOut();
+        DBG.fpx = diffCount(probe, post);
+        DBG.bad  = badCount(probe, mid, post);
+        // 인물 레이어가 배경을 건드렸다면(기기마다 그리기 결과가 다른 경우)
+        // 어깨 둘레에 얼룩으로 보입니다. 몇 번 연속 잡히면 가림을 접습니다.
+        if (DBG.bad > chk.width * chk.height * 0.06){
+          if (++badRun >= 3 && occOK){
+            occOK = false;
+            DBG.occ = "off: 배경이 얼룩져서";
+            setStatus("이 기기에서는 날개를 몸 위에 그립니다", 2600);
+          }
+        } else badRun = 0;
+      }
+    }
+    // 오래 켜 두면 기기가 날개 그림을 몰래 비우는 일이 있습니다 — 가끔 확인해 다시 굽습니다
+    if (DBG.det % 180 === 7){
+      for (const key of Object.keys(wingTex)){
+        if (inkOf(wingTex[key]) === 0) delete wingTex[key];
+      }
+    }
+    sweepTracks();
+    octx.restore();
+
+    watchCrowd(count, now);
+    const drawn = count > 0;
+    if (drawn){
+      if (missFrames > 0) setStatus(count > 1 ? `${count}명 감지됨` : "날개 생성됨", 1400);
+      if (count !== reportedCount){
+        reportedCount = count;
+        if (count > 1) setStatus(`${count}명 감지됨`, 1600);
+      }
+      missFrames = 0;
+    } else if (++missFrames === 30){
+      reportedCount = 0;
+      setStatus("어깨가 보이도록 카메라에서 한두 걸음 물러나 보세요");
+    }
+   } catch (e){
+    // 여기서 터지면 날개가 한 장도 안 그려집니다 — 조용히 넘기지 말고 화면에 알립니다
+    const msg = (e && e.message ? e.message : String(e));
+    if (DBG.err !== msg){
+      DBG.err = msg;
+      setStatus("그리기 오류: " + msg.slice(0, 60), 5000);
+    }
+   }
+   showDebug();
+  });
+}
+
+/* ────────────────────────────────────────────────────────────
+   6. 사진 촬영
+   ──────────────────────────────────────────────────────────── */
+
+document.getElementById("shoot").onclick = () => {
+  const flash = document.getElementById("flash");
+  flash.style.opacity = ".85";
+  setTimeout(() => flash.style.opacity = "0", 60);
+  const name = `나비날개_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"")}.png`;
+  out.toBlob(async blob => {
+    if (!blob) return;
+    // 아이폰은 링크 다운로드가 막혀 있어 공유 시트를 먼저 씁니다 (사진 앱에 저장 가능)
+    try {
+      const file = new File([blob], name, { type: "image/png" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })){
+        await navigator.share({ files: [file] });
+        return;
+      }
+    } catch (e){
+      if (e && e.name === "AbortError") return;   // 사용자가 공유를 취소함
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    if ("download" in a){
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+    } else {
+      window.open(url, "_blank");                 // 최후 수단: 새 탭에서 길게 눌러 저장
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+  }, "image/png");
+};
+
+/* ────────────────────────────────────────────────────────────
+   7. 시작
+   ──────────────────────────────────────────────────────────── */
+
+/* 촬영 중에는 화면이 꺼지지 않게 */
+let wakeLock = null;
+async function keepAwake(){
+  try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e){ /* 미지원 */ }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && running) keepAwake();
+});
+
+/* 두 번째부터는 바로 열리도록 — 실패해도 앱은 그대로 동작합니다 */
+if ("serviceWorker" in navigator && isSecureContext){
+  addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+}
+
+const startBtn = document.getElementById("start");
+const mineBtn = document.getElementById("startMine");
+
+/* 「나만의 나비」 — 도감을 먼저 읽어야 날개 모양 데이터가 있습니다 */
+mineBtn.onclick = async () => {
+  mineBtn.disabled = startBtn.disabled = true;
+  mineBtn.textContent = "준비 중…";
+  const err = document.getElementById("err");
+  err.textContent = "";
+  try {
+    await loadSpecies();
+    document.getElementById("intro").hidden = true;
+    openDesign();
+  } catch (e){
+    err.textContent = "도감 파일을 불러오지 못했습니다 — " + (e && e.message ? e.message : e);
+  }
+  mineBtn.disabled = startBtn.disabled = false;
+  mineBtn.textContent = "나만의 나비 디자인";
+};
+
+/* 두 갈래가 만나는 곳 — pick 이 MINE 이면 내가 만든 날개로 시작합니다 */
+async function startApp(pick){
+  startBtn.disabled = mineBtn.disabled = true;
+  startBtn.textContent = "준비 중…";
+  const err = document.getElementById("err");
+  err.textContent = "";
+  try {
+    startBtn.textContent = "도감 불러오는 중…";
+    await loadSpecies();
+    if (!mine) mine = loadMine();
+    if (mine){ repaintMine(); registerMine(); mineChanged(); }
+    buildSpeciesUI();
+    if (pick === MINE) selectSpecies(MINE);
+    await openCamera();
+    startBtn.textContent = "모델 불러오는 중…";
+    await initModel();
+    const intro = document.getElementById("intro");
+    if (intro) intro.remove();
+    bar.hidden = false;
+    fitBtn.hidden = false;
+    // 옛 사파리(캔버스 filter 미지원)나 코어가 적은 기기는 한 단계 낮춰 시작합니다
+    if (!BLUR_REAL || (navigator.hardwareConcurrency || 8) <= 4) setGear(1);
+    watchBadge();
+    running = true;
+    runStart = performance.now();
+    keepAwake();
+    render();
+  } catch (e){
+    document.getElementById("intro").hidden = false;
+    startBtn.disabled = mineBtn.disabled = false;
+    startBtn.textContent = "다시 시도";
+    const nm = e && e.name;
+    err.textContent =
+      (nm === "NotAllowedError" || nm === "SecurityError")
+        ? "카메라 권한이 거부되었습니다. 사파리라면 주소창 왼쪽 「아A」 → 웹사이트 설정 → 카메라를 «허용»으로 바꿔 주세요."
+      : (nm === "NotFoundError" || nm === "OverconstrainedError")
+        ? "쓸 수 있는 카메라를 찾지 못했습니다. 다른 앱이 카메라를 쓰고 있지 않은지 확인해 주세요."
+      : (nm === "NotReadableError")
+        ? "카메라를 다른 앱이 쓰고 있습니다. 그 앱을 닫고 다시 시도해 주세요."
+      : "시작할 수 없습니다 [" + (nm || "?") + "] " + (e && e.message ? e.message : e);
+  }
+}
+startBtn.onclick = () => startApp("nature");
+</script>
+</body>
+</html>
